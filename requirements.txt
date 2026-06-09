@@ -1,0 +1,6 @@
+# GTAV-Claude-MCP host + MCP server dependencies
+# Install:  pip install -r requirements.txt
+# Also required once:  `claude /login`  (the Agent SDK reuses your Claude subscription)
+
+claude-agent-sdk>=0.1.0    # headless host that drives Claude (gtav_host.py)
+mcp[cli]>=1.0,<2           # MCP server (mcp_server/server.py)

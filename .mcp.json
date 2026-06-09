@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gtav-memory": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "mcp_server.server"],
+      "cwd": ".",
+      "env": {}
+    }
+  }
+}

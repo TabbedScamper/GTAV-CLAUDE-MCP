@@ -1,0 +1,300 @@
+"""
+gtav_host.py - Headless Claude host for the in-game GTA V chat.
+
+This replaces the old "interactive claude in a terminal + ConsoleTrigger mirror + 3rd-party
+paste tool" chain with ONE always-on process:
+
+    in-game F10  ->  bridge queue  ->  [host pulls]  ->  Claude (Agent SDK)  ->  reply
+                                                                  |
+                            transcript written to GTAV_Claude_Console shared memory
+                                                                  v
+                                                   C# ClaudeChatUI panel renders it
+
+Why this is seamless:
+  - The Claude Agent SDK reuses your existing `claude /login` (Claude subscription) - NO api key,
+    NO terminal window, NO focus stealing, NO paste hack.
+  - The host owns a persistent session (context persists across messages).
+  - Claude gets ALL the in-game tools via the existing MCP server (mcp_server.server).
+  - The host writes the conversation into the same shared-memory buffer the LemonUI panel
+    already reads, so it DOUBLES AS the terminal mirror -> ConsoleTrigger.exe is retired.
+
+Run:  python gtav_host.py        (or via run_host.bat, minimized)
+Stop: Ctrl+C
+Requires:  pip install -r requirements.txt   and   `claude /login` done once.
+"""
+import asyncio
+import json
+import mmap
+import os
+import socket
+import struct
+import sys
+import time
+
+# ----------------------------------------------------------------------------
+# Config
+# ----------------------------------------------------------------------------
+HERE = os.path.dirname(os.path.abspath(__file__))
+BRIDGE_HOST = "127.0.0.1"
+BRIDGE_PORT = 27015
+SHARED_MEM_NAME = "GTAV_Claude_Console"   # the C# panel reads this (was ConsoleTrigger's)
+SHM_SIZE = 64 * 1024
+SHM_MAX_CONTENT = 60000                   # C# caps reads at 60000 bytes
+# Event-driven input via long-poll: the bridge holds the request open and returns the instant
+# you press Enter in-game (it checks the queue every frame). Re-issued every AWAIT_TIMEOUT_MS.
+AWAIT_TIMEOUT_MS = 25000                   # how long each long-poll waits before re-issuing
+AWAIT_SOCKET_TIMEOUT = 35.0               # host socket timeout (must exceed AWAIT_TIMEOUT_MS/1000)
+MAX_TRANSCRIPT_LINES = 400
+
+SYSTEM_PROMPT = (
+    "You are Claude, embedded as an in-game assistant inside GTA V (single-player). "
+    "The user talks to you from inside the game via an on-screen chat. "
+    "Use the gtav memory-bridge tools to see and safely act in the game: call natives by name "
+    "(call_native), spawn vehicles, set weather/time, give weapons, read/write wheel values, etc. "
+    "ALWAYS prefer calling a native BY NAME (it is hash-verified and crash-safe) and never guess raw "
+    "hashes. Keep replies SHORT and conversational (1-3 sentences) - they render in a small in-game "
+    "panel. When you perform an action, confirm it briefly. Single-player only; never touch GTA Online."
+)
+
+# ----------------------------------------------------------------------------
+# Shared-memory transcript (what the in-game panel renders)
+# ----------------------------------------------------------------------------
+class Transcript:
+    def __init__(self):
+        self._lines = []
+        try:
+            self._mm = mmap.mmap(-1, SHM_SIZE, tagname=SHARED_MEM_NAME)
+        except Exception as e:
+            self._mm = None
+            print(f"[host] WARNING: could not open shared memory '{SHARED_MEM_NAME}': {e}")
+        self.add("Claude in-game host started. Press F10 in GTA to chat.")
+
+    def add(self, line: str):
+        for ln in str(line).split("\n"):
+            self._lines.append(ln)
+        if len(self._lines) > MAX_TRANSCRIPT_LINES:
+            self._lines = self._lines[-MAX_TRANSCRIPT_LINES:]
+        self._flush()
+
+    def replace_last(self, line: str):
+        """Replace the last line (for live-streaming Claude's reply)."""
+        if self._lines:
+            self._lines[-1] = str(line)
+        else:
+            self._lines.append(str(line))
+        self._flush()
+
+    def _flush(self):
+        if not self._mm:
+            return
+        content = "\n".join(self._lines).encode("utf-8")
+        if len(content) > SHM_MAX_CONTENT:
+            content = content[-SHM_MAX_CONTENT:]
+        try:
+            self._mm.seek(0)
+            self._mm.write(struct.pack("<i", len(content)))
+            self._mm.write(content)
+        except Exception as e:
+            print(f"[host] shm write failed: {e}")
+
+# ----------------------------------------------------------------------------
+# Bridge client (same wire protocol as mcp_server: 4-byte LE length + JSON)
+# ----------------------------------------------------------------------------
+def bridge_send(command: str, params: dict | None = None, timeout: float = 5.0) -> dict:
+    params = params or {}
+    try:
+        with socket.create_connection((BRIDGE_HOST, BRIDGE_PORT), timeout=timeout) as s:
+            payload = json.dumps({"command": command, "params": params}).encode("utf-8")
+            s.sendall(struct.pack("<I", len(payload)) + payload)
+            head = b""
+            while len(head) < 4:
+                chunk = s.recv(4 - len(head))
+                if not chunk:
+                    return {"error": "bridge closed"}
+                head += chunk
+            size = struct.unpack("<I", head)[0]
+            body = b""
+            while len(body) < size:
+                chunk = s.recv(min(4096, size - len(body)))
+                if not chunk:
+                    break
+                body += chunk
+            return json.loads(body.decode("utf-8"))
+    except (ConnectionRefusedError, socket.timeout):
+        return {"error": "bridge not running"}
+    except Exception as e:
+        return {"error": f"bridge error: {e}"}
+
+def pull_user_messages() -> list[str]:
+    """Drain queued in-game F10 messages from the bridge."""
+    r = bridge_send("get_pending_messages")
+    out = []
+    for m in r.get("messages", []) or []:
+        text = m.get("message") or m.get("text")
+        if text:
+            out.append(text)
+    return out
+
+def notify(text: str):
+    """Optional yellow in-game toast (the panel shows the transcript regardless)."""
+    bridge_send("chat_post", {"message": "~y~" + text[:80]})
+
+def read_last_op_from_disk() -> str | None:
+    """Read the bridge's write-ahead log directly from disk (survives a GTA crash since the
+    bridge fsyncs it before each op). Lets the host report the last op even when GTA is dead."""
+    wal = os.path.join(HERE, "pyscript", "crash_logs", "last_op.jsonl")
+    try:
+        if not os.path.exists(wal):
+            return None
+        with open(wal, "r", encoding="utf-8-sig") as f:  # tolerate a BOM
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+        if not lines:
+            return None
+        op = json.loads(lines[-1])
+        return f"last op before crash: {op.get('op')} {op.get('address') or op.get('name') or ''} " \
+               f"= {op.get('value', op.get('args', ''))} (seq {op.get('seq')}, {op.get('timestamp','')})"
+    except Exception:
+        return None
+
+# ----------------------------------------------------------------------------
+# Claude Agent SDK
+# ----------------------------------------------------------------------------
+try:
+    from claude_agent_sdk import (
+        ClaudeSDKClient, ClaudeAgentOptions,
+        AssistantMessage, ResultMessage, SystemMessage,
+    )
+    SDK_OK = True
+    SDK_ERR = None
+except Exception as e:  # not installed yet
+    SDK_OK = False
+    SDK_ERR = str(e)
+
+def _build_options():
+    return ClaudeAgentOptions(
+        cwd=HERE,
+        system_prompt=SYSTEM_PROMPT,
+        setting_sources=["project"],          # loads this project's CLAUDE.md
+        permission_mode="bypassPermissions",  # headless: no tool-approval prompts
+        allowed_tools=["mcp__gtav__*"],        # all game-bridge tools
+        mcp_servers={
+            "gtav": {
+                "command": sys.executable,
+                "args": ["-m", "mcp_server.server"],
+            }
+        },
+    )
+
+def _extract_text(message) -> str:
+    """Pull display text out of an AssistantMessage across SDK content shapes."""
+    parts = []
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    for block in content or []:
+        t = getattr(block, "text", None)
+        if t:
+            parts.append(t)
+    return "".join(parts)
+
+async def handle_message(client, user_text: str, transcript: Transcript):
+    transcript.add(f"> {user_text}")
+    transcript.add("Claude: ...")
+    reply = ""
+    try:
+        await client.query(user_text)
+        async for message in client.receive_response():
+            if SystemMessage and isinstance(message, SystemMessage):
+                continue
+            if AssistantMessage and isinstance(message, AssistantMessage):
+                txt = _extract_text(message)
+                if txt:
+                    reply += txt
+                    transcript.replace_last("Claude: " + reply)
+            elif ResultMessage and isinstance(message, ResultMessage):
+                break
+    except Exception as e:
+        transcript.replace_last(f"Claude: [error: {e}]")
+        print(f"[host] query error: {e}")
+        return
+    if reply.strip():
+        transcript.replace_last("Claude: " + reply.strip())
+        notify(reply.strip())
+    else:
+        transcript.replace_last("Claude: (done)")
+
+def _self_register():
+    """Write this host's launcher path where the in-game C# UI can find it, so after the
+    first manual run the DLL can auto-launch us (no hardcoded per-machine path)."""
+    try:
+        cfg_dir = os.path.join(os.environ.get("LOCALAPPDATA", HERE), "GTAV-Claude-MCP")
+        os.makedirs(cfg_dir, exist_ok=True)
+        bat = os.path.join(HERE, "run_host.bat")
+        with open(os.path.join(cfg_dir, "host_path.txt"), "w", encoding="utf-8") as f:
+            f.write(bat)
+    except Exception as e:
+        print(f"[host] self-register skipped: {e}")
+
+async def main():
+    _self_register()
+    transcript = Transcript()
+
+    if not SDK_OK:
+        msg = (f"Claude Agent SDK not installed ({SDK_ERR}). Run: pip install -r requirements.txt")
+        transcript.add(msg)
+        print("[host] " + msg)
+        return
+
+    print(f"[host] starting (cwd={HERE}); waiting for in-game messages...")
+    # Warn (non-fatal) if the bridge isn't up yet.
+    st = bridge_send("status")
+    if st.get("error"):
+        transcript.add(f"(bridge: {st['error']} - start GTA V + load bridge.py with F9)")
+
+    options = _build_options()
+    while True:  # outer loop: recover the session if the SDK subprocess dies
+        try:
+            async with ClaudeSDKClient(options=options) as client:
+                transcript.add("Connected to Claude. Ready.")
+                bridge_up = True
+                while True:
+                    # LONG-POLL (event-driven): the bridge's await_user_message blocks (checking the
+                    # queue every game frame ~16ms) and returns the instant you press Enter in-game.
+                    # It returns a timeout error after AWAIT_TIMEOUT_MS if you didn't type - we just
+                    # re-issue (that also serves as the GTA liveness heartbeat).
+                    r = await asyncio.to_thread(
+                        bridge_send, "await_user_message",
+                        {"timeout_ms": AWAIT_TIMEOUT_MS}, AWAIT_SOCKET_TIMEOUT)
+                    err = str(r.get("error", "")).lower()
+
+                    if r.get("success") and r.get("message"):
+                        if not bridge_up:
+                            bridge_up = True
+                            transcript.add("(GTA bridge back online.)")
+                        await handle_message(client, r["message"], transcript)
+                    elif "timeout" in err or "deferred" in err:
+                        # No message in the window - bridge is alive, just idle. Loop instantly.
+                        if not bridge_up:
+                            bridge_up = True
+                            transcript.add("(GTA bridge back online.)")
+                    else:
+                        # Connection refused / closed / not running -> GTA crashed or closed.
+                        if bridge_up:
+                            bridge_up = False
+                            note = read_last_op_from_disk()
+                            transcript.add("(GTA bridge offline - game closed or crashed."
+                                           + (f" {note})" if note else ")"))
+                        await asyncio.sleep(2.0)  # back off before retrying a dead bridge
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            print("[host] shutting down.")
+            return
+        except Exception as e:
+            transcript.add(f"(host session error: {e} - reconnecting in 5s)")
+            print(f"[host] session error: {e}; reconnecting in 5s")
+            await asyncio.sleep(5.0)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass

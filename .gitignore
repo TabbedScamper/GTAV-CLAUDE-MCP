@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Runtime / local
+pyscript/crash_logs/
+*.log
+
+# C# build output - EXCEPT the two prebuilt DLLs we ship for convenience
+ui_companion/obj/
+ui_companion/bin/*
+!ui_companion/bin/Release/
+ui_companion/bin/Release/*
+!ui_companion/bin/Release/ClaudeChatUI.dll
+!ui_companion/bin/Release/LemonUI.SHVDN3.dll
+
+# Editor / OS
+.vs/
+.idea/
+*.user
+Thumbs.db
+.DS_Store
