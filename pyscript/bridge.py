@@ -643,13 +643,23 @@ def handle_write(params: dict) -> dict:
     except ValueError:
         return {"error": f"Invalid address: {address}"}
 
+    writable = is_valid_address(addr, 4, check_writable=True)
     if type_name == "float":
         old_value = write_float(addr, float(value))
+        requested = float(value)
     else:
         old_value = write_int(addr, int(value))
+        requested = int(value)
 
     if old_value is None:
-        return {"error": f"Failed to write at 0x{addr:X}"}
+        return {"error": f"Failed to write at 0x{addr:X}", "region_writable": writable}
+
+    # Read back to verify it actually took (close the act->observe loop).
+    after = _read_typed(addr, type_name)
+    if type_name == "float":
+        verified = after is not None and abs(after - requested) < 1e-3
+    else:
+        verified = after is not None and after == requested
 
     # Track for undo
     _undo_stack.append({
@@ -662,8 +672,12 @@ def handle_write(params: dict) -> dict:
     return {
         "success": True,
         "address": f"0x{addr:X}",
-        "old_value": old_value,
-        "new_value": value
+        "before": old_value,
+        "after": after,
+        "requested": value,
+        "verified": verified,
+        "region_writable": writable,
+        "undo_pushed": True,
     }
 
 def handle_snapshot(params: dict) -> dict:
@@ -2329,19 +2343,240 @@ def handle_get_context(params: dict) -> dict:
     return {"success": True, "context": ctx}
 
 # =============================================================================
+# Debugging workbench: environment, inspect, write-feedback, session findings.
+# These turn the bridge from "act in the game" into "see + reason about the game"
+# so Claude can build/debug ANY mod - the "measure, don't guess" toolset.
+# =============================================================================
+
+def _read_typed(addr: int, type_name: str):
+    """Guarded read-back of a single value (for write verification). None on failure."""
+    if not is_valid_address(addr, 4):
+        return None
+    try:
+        if type_name == "float":
+            return round(ctypes.cast(addr, ctypes.POINTER(ctypes.c_float)).contents.value, 4)
+        return ctypes.cast(addr, ctypes.POINTER(ctypes.c_int32)).contents.value
+    except Exception:
+        return None
+
+def handle_get_environment(params: dict) -> dict:
+    """Ground truth: edition, exe, module base/size, native-DB stats, verified offsets.
+    So Claude never assumes Legacy offsets on Enhanced (and vice-versa)."""
+    base, sz = _get_main_module()
+    exe = None
+    try:
+        buf = ctypes.create_unicode_buffer(520)
+        kernel32.GetModuleFileNameW(None, buf, 520)
+        exe = os.path.basename(buf.value)
+    except Exception:
+        pass
+    env = {
+        "edition": _EDITION,
+        "exe": exe,
+        "module_base": f"0x{base:X}" if base else None,
+        "module_size": f"0x{sz:X}" if sz else None,
+        "pyloader_available": bool(PYLOADER_AVAILABLE and gta),
+        "native_db": {
+            "loaded": NATIVE_DB.loaded,
+            "edition": NATIVE_DB.edition,
+            "callable": len(NATIVE_DB._allow),
+            "total": len(NATIVE_DB.natives),
+        },
+        "verified_offsets": {
+            "wheel_fields": {k: f"0x{v:X}" for k, v in WHEEL_OFFSETS.items()},
+            "wheel_array_candidates": [f"0x{o:X}" for o in WHEEL_ARRAY_OFFSETS],
+            "verified_on": "legacy",
+        },
+        "session_goal": _FINDINGS.get("goal"),
+        "findings_count": len(_FINDINGS.get("offsets", {})),
+    }
+    if _EDITION == "enhanced":
+        env["warnings"] = ["Wheel offsets were verified on Legacy - treat as UNVERIFIED on "
+                           "Enhanced; re-measure with snapshot/diff before relying on them."]
+    return {"success": True, "environment": env}
+
+def _inspect_region(base: int, size: int, labels: dict) -> list:
+    """Decode a memory region into typed, labeled slots (float/int/pointer/zero/raw)."""
+    slots = []
+    off = 0
+    while off < size:
+        a = base + off
+        if not is_valid_address(a, 4):
+            off += 8
+            continue
+        label = labels.get(off)
+        # Pointer test on 8-byte-aligned slots
+        if off % 8 == 0 and is_valid_address(a, 8):
+            try:
+                qv = ctypes.cast(a, ctypes.POINTER(ctypes.c_uint64)).contents.value
+            except Exception:
+                qv = 0
+            if qv > 0x10000 and is_valid_address(qv, 8):
+                slots.append({"offset": f"0x{off:X}", "kind": "pointer",
+                              "value": f"0x{qv:X}", "label": label})
+                off += 8
+                continue
+        try:
+            iv = ctypes.cast(a, ctypes.POINTER(ctypes.c_int32)).contents.value
+            fv = ctypes.cast(a, ctypes.POINTER(ctypes.c_float)).contents.value
+        except Exception:
+            off += 4
+            continue
+        entry = {"offset": f"0x{off:X}", "int": iv, "label": label}
+        af = abs(fv)
+        if fv == 0.0:
+            entry["kind"] = "zero"
+        elif fv == fv and 1e-3 < af < 1e7:  # finite, plausible-magnitude float
+            entry["kind"] = "float"
+            entry["float"] = round(fv, 4)
+        elif -1000000 < iv < 1000000:
+            entry["kind"] = "int"
+        else:
+            entry["kind"] = "raw"
+            entry["hex"] = f"0x{iv & 0xFFFFFFFF:08X}"
+        slots.append(entry)
+        off += 4
+    return slots
+
+def handle_inspect(params: dict) -> dict:
+    """Universal 'what am I looking at': decode an entity handle or raw address into labeled
+    typed slots, with entity type/model and known/finding labels applied. The debug primitive."""
+    handle = params.get("handle")
+    address = params.get("address")
+    size = max(8, min(int(params.get("size", 256)), 2048))
+    struct_hint = params.get("struct")
+    result = {}
+    base = None
+
+    if handle is not None:
+        h = int(handle)
+        base = get_vehicle_address(h)  # gta.entity_address resolves any entity
+        if not base:
+            return {"error": f"Could not resolve address for handle {h}"}
+        result["handle"] = h
+        for t, nat in (("vehicle", "IS_ENTITY_A_VEHICLE"), ("ped", "IS_ENTITY_A_PED"),
+                       ("object", "IS_ENTITY_AN_OBJECT")):
+            if _call_native_safe(nat, h, return_type="bool"):
+                result["entity_type"] = t
+                break
+        model = _call_native_safe("GET_ENTITY_MODEL", h, return_type="int")
+        if model is not None:
+            result["model_hash"] = f"0x{int(model) & 0xFFFFFFFF:X}"
+            if result.get("entity_type") == "vehicle":
+                dn = _call_native_safe("GET_DISPLAY_NAME_FROM_VEHICLE_MODEL", model, return_type="string")
+                if dn:
+                    result["model"] = dn
+    elif address is not None:
+        try:
+            base = int(address, 16) if isinstance(address, str) and address.startswith("0x") else int(address)
+        except (ValueError, TypeError):
+            return {"error": f"Invalid address: {address}"}
+    else:
+        return {"error": "Provide a 'handle' or 'address'"}
+
+    if not is_valid_address(base, 4):
+        return {"error": f"Address 0x{base:X} not readable"}
+
+    # Build offset->label map: struct hint + explicit labels + session findings for this base.
+    labels = {}
+    if struct_hint == "wheel":
+        labels.update({v: k for k, v in WHEEL_OFFSETS.items()})
+    for k, v in (params.get("labels") or {}).items():
+        try:
+            labels[int(k, 16) if isinstance(k, str) and k.startswith("0x") else int(k)] = v
+        except (ValueError, TypeError):
+            pass
+    for fname, f in _FINDINGS.get("offsets", {}).items():
+        try:
+            if f.get("base") and int(str(f["base"]), 16) == base and f.get("offset") is not None:
+                o = f["offset"]
+                labels[int(o, 16) if isinstance(o, str) else int(o)] = fname
+        except (ValueError, TypeError):
+            pass
+
+    result.update({"address": f"0x{base:X}", "size": size,
+                   "slots": _inspect_region(base, size, labels)})
+    return {"success": True, **result}
+
+# --- Session findings (persists across F9 reloads via a JSON file) ---
+_FINDINGS = {"goal": None, "offsets": {}, "notes": []}
+
+def _findings_path():
+    return os.path.join(os.path.dirname(__file__), "session_findings.json")
+
+def _load_findings():
+    global _FINDINGS
+    try:
+        p = _findings_path()
+        if os.path.exists(p):
+            with open(p, "r", encoding="utf-8-sig") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                _FINDINGS = {"goal": data.get("goal"), "offsets": data.get("offsets", {}),
+                             "notes": data.get("notes", [])}
+    except Exception as e:
+        log_message("error", f"load_findings: {e}")
+
+def _save_findings():
+    try:
+        with open(_findings_path(), "w", encoding="utf-8") as f:
+            json.dump(_FINDINGS, f, indent=2)
+    except Exception as e:
+        log_message("error", f"save_findings: {e}")
+
+def handle_set_goal(params: dict) -> dict:
+    """Record what the user is building this session (persists)."""
+    _FINDINGS["goal"] = params.get("goal")
+    _save_findings()
+    return {"success": True, "goal": _FINDINGS["goal"]}
+
+def handle_note_finding(params: dict) -> dict:
+    """Record a discovered offset/label/struct so it survives reloads and labels future inspects."""
+    name = params.get("name")
+    if not name:
+        return {"error": "name required"}
+    entry = {k: params[k] for k in ("offset", "base", "value", "kind", "note", "verified")
+             if params.get(k) is not None}
+    _FINDINGS.setdefault("offsets", {})[name] = entry
+    _save_findings()
+    return {"success": True, "name": name, "finding": entry, "total": len(_FINDINGS["offsets"])}
+
+def handle_get_findings(params: dict) -> dict:
+    """Everything discovered/declared this session (goal + offsets + notes)."""
+    return {"success": True, "goal": _FINDINGS.get("goal"),
+            "offsets": _FINDINGS.get("offsets", {}), "notes": _FINDINGS.get("notes", [])}
+
+def handle_clear_findings(params: dict) -> dict:
+    """Reset the session findings."""
+    global _FINDINGS
+    _FINDINGS = {"goal": None, "offsets": {}, "notes": []}
+    _save_findings()
+    return {"success": True, "cleared": True}
+
+_load_findings()
+
+# =============================================================================
 # Pattern scanning (AOB) - the offset-discovery primitive (was a dead tool)
 # Chunked via Deferred so a multi-MB module scan never freezes the game thread.
 # =============================================================================
 
 def _get_main_module():
-    """Return (base_addr, image_size) of GTA5.exe, or (None, None)."""
+    """Return (base_addr, image_size) of the host exe, or (None, None).
+    NOTE: GetModuleHandleW returns a 64-bit HMODULE; restype MUST be set or ctypes
+    defaults to c_int and truncates the pointer -> garbage base -> access violation."""
     try:
+        kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+        kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
         base = kernel32.GetModuleHandleW(None)
         if not base:
             return None, None
-        # PE header: e_lfanew @ base+0x3C -> NT headers; SizeOfImage @ OptionalHeader+0x38
+        # Validate before touching the PE header (never raw-deref unverified memory).
+        if not is_valid_address(base + 0x3C, 4):
+            return None, None
         e_lfanew = ctypes.cast(base + 0x3C, ctypes.POINTER(ctypes.c_uint32)).contents.value
         nt = base + e_lfanew
+        if not is_valid_address(nt + 0x18 + 0x38, 4):
+            return None, None
         size_of_image = ctypes.cast(nt + 0x18 + 0x38, ctypes.POINTER(ctypes.c_uint32)).contents.value
         return base, size_of_image
     except Exception as e:
@@ -2467,6 +2702,13 @@ COMMANDS = {
     "search_natives": handle_search_natives,
     "list_namespaces": handle_list_namespaces,
     "get_context": handle_get_context,
+    # Debugging workbench
+    "get_environment": handle_get_environment,
+    "inspect": handle_inspect,
+    "set_goal": handle_set_goal,
+    "note_finding": handle_note_finding,
+    "get_findings": handle_get_findings,
+    "clear_findings": handle_clear_findings,
     # Pattern scanning (offset discovery)
     "scan_pattern": handle_scan_pattern,
     "resolve_rip_relative": handle_resolve_rip_relative,

@@ -90,8 +90,16 @@ See [`TESTING.md`](TESTING.md) for the full first-run checklist and smoke tests.
 - **Any native, safely:** `search_natives`, `native_info`, and `call_native` (by name). The native
   is resolved to a verified hash for your edition (Legacy/Enhanced) and refused if not on the
   allowlist — so a wrong hash can't crash the game. Args are coerced to the declared types.
-- **Memory / RE:** `read_memory`, `write_memory` (validated + page-protection-safe + undoable),
-  `snapshot`/`diff`, `watch`, `scan_pattern` (AOB), `resolve_rip_relative`.
+- **Memory / RE:** `read_memory`, `write_memory` (validated + page-protection-safe + undoable,
+  returns before/after + verified), `snapshot`/`diff`, `watch`, `scan_pattern` (AOB),
+  `resolve_rip_relative`.
+- **Debugging workbench (build/debug anything):**
+  - `inspect(handle | address)` — decode an entity or memory region into labeled, typed slots
+    (float / int / pointer / zero / raw) with entity type + model; follow pointers to walk structs.
+  - `get_environment` — ground truth: edition (Legacy/Enhanced), exe, module base/size, native-DB
+    stats, and which offsets are verified for *this* build (so it never guesses the ground).
+  - `set_goal` / `note_finding` / `get_findings` — a session memory of what you're building and the
+    offsets/labels discovered, persisted across F9 reloads and auto-applied as `inspect` labels.
 - **Vehicle wheels:** `get_wheel_values`, `set_wheel_value`, continuous per-frame re-assert.
 
 ## Safety / design

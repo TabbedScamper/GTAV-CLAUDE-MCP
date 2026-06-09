@@ -927,6 +927,62 @@ def get_context(detail: str = "lite") -> str:
     Fields that can't be read are omitted."""
     return json.dumps(_send_command("get_context", {"detail": detail}), indent=2)
 
+# --- Debugging workbench ---
+
+@mcp.tool()
+def get_environment() -> str:
+    """Ground truth for debugging: GTA edition (Legacy/Enhanced), exe, module base+size,
+    native-DB stats, and which offsets are verified for THIS build. Check this before relying
+    on offsets — wheel offsets are Legacy-verified and may differ on Enhanced."""
+    return json.dumps(_send_command("get_environment"), indent=2)
+
+@mcp.tool()
+def inspect(handle: int | None = None, address: str | None = None, size: int = 256,
+            struct: str | None = None) -> str:
+    """Universal 'what am I looking at': decode an entity handle OR a raw memory address into
+    labeled, typed slots (float / int / pointer / zero / raw), with entity type + model and any
+    known/finding labels applied. Follow pointer slots with another inspect on their value.
+    Args: handle (entity) or address (hex/int); size bytes (8-2048, default 256);
+    struct="wheel" to apply known wheel-field labels."""
+    params = {"size": size}
+    if handle is not None:
+        params["handle"] = handle
+    if address is not None:
+        params["address"] = address
+    if struct is not None:
+        params["struct"] = struct
+    return json.dumps(_send_command("inspect", params), indent=2)
+
+@mcp.tool()
+def set_goal(goal: str) -> str:
+    """Record what you're building/debugging this session (persists across game/script reloads)."""
+    return json.dumps(_send_command("set_goal", {"goal": goal}), indent=2)
+
+@mcp.tool()
+def note_finding(name: str, offset: str | None = None, base: str | None = None,
+                 value: str | None = None, kind: str | None = None, note: str | None = None,
+                 verified: bool | None = None) -> str:
+    """Record a discovered offset/label/struct so it survives reloads and auto-labels future
+    inspect() calls. e.g. note_finding('camber', offset='0x08', base='0x7FF...', kind='float',
+    verified=True). Use base+offset so inspect can label that exact address."""
+    params = {"name": name}
+    for k, v in (("offset", offset), ("base", base), ("value", value), ("kind", kind),
+                 ("note", note), ("verified", verified)):
+        if v is not None:
+            params[k] = v
+    return json.dumps(_send_command("note_finding", params), indent=2)
+
+@mcp.tool()
+def get_findings() -> str:
+    """Everything discovered/declared this session: the goal, named offsets, and notes.
+    Check this at the start of a task so you don't re-derive what's already known."""
+    return json.dumps(_send_command("get_findings"), indent=2)
+
+@mcp.tool()
+def clear_findings() -> str:
+    """Reset the session findings (goal + offsets + notes)."""
+    return json.dumps(_send_command("clear_findings"), indent=2)
+
 # =============================================================================
 # Entry Point
 # =============================================================================
