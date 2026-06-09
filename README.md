@@ -79,6 +79,9 @@ See [`TESTING.md`](TESTING.md) for the full first-run checklist and smoke tests.
 
 ## What Claude can do
 
+- **Situational awareness:** every in-game message is auto-prefixed with live state (location,
+  vehicle, speed, time, weather, wanted level, health) via `get_context`, so replies are aware of
+  what's actually happening — e.g. *"in a ADDER (87 mph), in VINEWOOD, 14:30, THUNDER, wanted 2★"*.
 - **Convenience tools:** `spawn_vehicle`, `teleport`, `set_weather`, `set_time`, `give_weapon`,
   `repair_vehicle`, `get_player_ped`, `set_invincible`, `set_health`, `set_wanted_level`.
 - **Any native, safely:** `search_natives`, `native_info`, and `call_native` (by name). The native

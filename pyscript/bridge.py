@@ -2109,6 +2109,129 @@ def handle_list_namespaces(params: dict) -> dict:
     return {"success": True, "namespaces": dict(sorted(counts.items()))}
 
 # =============================================================================
+# get_context - a live snapshot of player/world state so Claude is "situationally
+# aware" in-game (inspired by TalkToMeV's provider pattern). Reads only, via the
+# verified-allowlist native path, every field best-effort (a failed read is omitted).
+# =============================================================================
+
+def _joaat(s: str) -> int:
+    """Jenkins one-at-a-time hash (GTA's GET_HASH_KEY), lower-cased like the game does."""
+    h = 0
+    for c in s.lower().encode("utf-8"):
+        h = (h + c) & 0xFFFFFFFF
+        h = (h + ((h << 10) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        h ^= (h >> 6)
+    h = (h + ((h << 3) & 0xFFFFFFFF)) & 0xFFFFFFFF
+    h ^= (h >> 11)
+    h = (h + ((h << 15) & 0xFFFFFFFF)) & 0xFFFFFFFF
+    return h & 0xFFFFFFFF
+
+_WEATHER_NAMES = ["EXTRASUNNY", "CLEAR", "CLOUDS", "SMOG", "FOGGY", "OVERCAST", "RAIN",
+                  "THUNDER", "CLEARING", "NEUTRAL", "SNOW", "BLIZZARD", "SNOWLIGHT",
+                  "XMAS", "HALLOWEEN"]
+_WEATHER_BY_HASH = {_joaat(n): n for n in _WEATHER_NAMES}
+
+def _call_native_safe(name, *args, return_type="int"):
+    """Call a native BY NAME via the verified allowlist; return its result or None on ANY
+    failure. No WAL (these are reads). Never raises - so get_context degrades gracefully."""
+    try:
+        if not (PYLOADER_AVAILABLE and gta and NATIVE_DB.loaded):
+            return None
+        h = NATIVE_DB.lookup(name)
+        if not h:
+            return None
+        coerced, _ = _coerce_args(list(args), NATIVE_DB.info(name))
+        return gta.invoke(int(h, 16), *coerced, return_type=return_type)
+    except Exception:
+        return None
+
+def _as_vec3(v):
+    """Normalize a Vector3-ish native return (tuple/list/dict/obj) into (x, y, z) or None."""
+    try:
+        if v is None:
+            return None
+        if isinstance(v, (list, tuple)) and len(v) >= 3:
+            return (float(v[0]), float(v[1]), float(v[2]))
+        if isinstance(v, dict):
+            return (float(v.get("x", 0)), float(v.get("y", 0)), float(v.get("z", 0)))
+        if hasattr(v, "x") and hasattr(v, "y") and hasattr(v, "z"):
+            return (float(v.x), float(v.y), float(v.z))
+    except Exception:
+        return None
+    return None
+
+def handle_get_context(params: dict) -> dict:
+    """Live player/world snapshot for situational awareness. Reads only; never crashes."""
+    if not (PYLOADER_AVAILABLE and gta and NATIVE_DB.loaded):
+        return {"error": "Native calls unavailable (PyLoaderV/DB not ready)"}
+
+    ctx = {}
+    ped = _call_native_safe("PLAYER_PED_ID", return_type="int")
+    pid = _call_native_safe("PLAYER_ID", return_type="int")
+
+    # --- Player ---
+    player = {}
+    if ped:
+        for key, nat, rt in (("health", "GET_ENTITY_HEALTH", "int"),
+                             ("max_health", "GET_PED_MAX_HEALTH", "int"),
+                             ("armour", "GET_PED_ARMOUR", "int")):
+            val = _call_native_safe(nat, ped, return_type=rt)
+            if val is not None:
+                player[key] = val
+        heading = _call_native_safe("GET_ENTITY_HEADING", ped, return_type="float")
+        if heading is not None:
+            player["heading"] = round(heading, 1)
+        coords = _as_vec3(_call_native_safe("GET_ENTITY_COORDS", ped, True, return_type="vector3"))
+        if coords:
+            player["position"] = {"x": round(coords[0], 2), "y": round(coords[1], 2), "z": round(coords[2], 2)}
+            zone = _call_native_safe("GET_NAME_OF_ZONE", coords[0], coords[1], coords[2], return_type="string")
+            if zone:
+                ctx["zone"] = zone
+    if pid is not None:
+        wl = _call_native_safe("GET_PLAYER_WANTED_LEVEL", pid, return_type="int")
+        if wl is not None:
+            player["wanted_level"] = wl
+    if player:
+        ctx["player"] = player
+
+    # --- Time of day ---
+    hours = _call_native_safe("GET_CLOCK_HOURS", return_type="int")
+    mins = _call_native_safe("GET_CLOCK_MINUTES", return_type="int")
+    if hours is not None and mins is not None:
+        ctx["time"] = f"{hours:02d}:{mins:02d}"
+
+    # --- Weather (hash -> name where known) ---
+    wh = _call_native_safe("GET_PREV_WEATHER_TYPE_HASH_NAME", return_type="int")
+    if wh is not None:
+        wh32 = int(wh) & 0xFFFFFFFF
+        ctx["weather"] = _WEATHER_BY_HASH.get(wh32, f"0x{wh32:X}")
+
+    # --- Vehicle (None = on foot) ---
+    if ped:
+        in_veh = _call_native_safe("IS_PED_IN_ANY_VEHICLE", ped, False, return_type="bool")
+        veh = _call_native_safe("GET_VEHICLE_PED_IS_IN", ped, False, return_type="int") if in_veh else None
+        if veh:
+            vehicle = {}
+            model = _call_native_safe("GET_ENTITY_MODEL", veh, return_type="int")
+            if model is not None:
+                disp = _call_native_safe("GET_DISPLAY_NAME_FROM_VEHICLE_MODEL", model, return_type="string")
+                if disp:
+                    vehicle["model"] = disp
+            spd = _call_native_safe("GET_ENTITY_SPEED", veh, return_type="float")
+            if spd is not None:
+                vehicle["speed_mph"] = round(spd * 2.2369, 1)
+            for key, nat in (("body_health", "GET_VEHICLE_BODY_HEALTH"),
+                            ("engine_health", "GET_VEHICLE_ENGINE_HEALTH")):
+                val = _call_native_safe(nat, veh, return_type="float")
+                if val is not None:
+                    vehicle[key] = round(val)
+            ctx["vehicle"] = vehicle
+        else:
+            ctx["vehicle"] = None
+
+    return {"success": True, "context": ctx}
+
+# =============================================================================
 # Pattern scanning (AOB) - the offset-discovery primitive (was a dead tool)
 # Chunked via Deferred so a multi-MB module scan never freezes the game thread.
 # =============================================================================
@@ -2246,6 +2369,7 @@ COMMANDS = {
     "native_info": handle_native_info,
     "search_natives": handle_search_natives,
     "list_namespaces": handle_list_namespaces,
+    "get_context": handle_get_context,
     # Pattern scanning (offset discovery)
     "scan_pattern": handle_scan_pattern,
     "resolve_rip_relative": handle_resolve_rip_relative,

@@ -53,7 +53,10 @@ SYSTEM_PROMPT = (
     "(call_native), spawn vehicles, set weather/time, give weapons, read/write wheel values, etc. "
     "ALWAYS prefer calling a native BY NAME (it is hash-verified and crash-safe) and never guess raw "
     "hashes. Keep replies SHORT and conversational (1-3 sentences) - they render in a small in-game "
-    "panel. When you perform an action, confirm it briefly. Single-player only; never touch GTA Online."
+    "panel. When you perform an action, confirm it briefly. Single-player only; never touch GTA Online. "
+    "Each user message is prefixed with a [Live game state: ...] line describing where the player is, "
+    "their vehicle, time, weather, wanted level and health - use it to respond in context. Call the "
+    "get_context tool if you need a fresh/fuller snapshot mid-task."
 )
 
 # ----------------------------------------------------------------------------
@@ -197,12 +200,47 @@ def _extract_text(message) -> str:
             parts.append(t)
     return "".join(parts)
 
+def _format_context(ctx: dict) -> str:
+    """Compact one-liner of live game state for prepending to each message."""
+    if not ctx:
+        return ""
+    parts = []
+    veh = ctx.get("vehicle")
+    if veh:
+        s = "in a " + veh.get("model", "vehicle")
+        if "speed_mph" in veh:
+            s += f" ({veh['speed_mph']:.0f} mph)"
+        parts.append(s)
+    elif "vehicle" in ctx:
+        parts.append("on foot")
+    if ctx.get("zone"):
+        parts.append("in " + ctx["zone"])
+    if ctx.get("time"):
+        parts.append(ctx["time"])
+    if ctx.get("weather"):
+        parts.append(ctx["weather"])
+    p = ctx.get("player") or {}
+    if "wanted_level" in p:
+        parts.append(f"wanted {p['wanted_level']}*")
+    if "health" in p:
+        parts.append(f"hp {p['health']}" + (f"/{p['max_health']}" if "max_health" in p else ""))
+    return ", ".join(parts)
+
 async def handle_message(client, user_text: str, transcript: Transcript):
     transcript.add(f"> {user_text}")
     transcript.add("Claude: ...")
+    # Auto-feed live game state so Claude is situationally aware (best-effort, non-fatal).
+    prompt = user_text
+    try:
+        r = await asyncio.to_thread(bridge_send, "get_context")
+        ctx_line = _format_context(r.get("context") or {}) if r.get("success") else ""
+        if ctx_line:
+            prompt = f"[Live game state: {ctx_line}]\n\n{user_text}"
+    except Exception:
+        pass
     reply = ""
     try:
-        await client.query(user_text)
+        await client.query(prompt)
         async for message in client.receive_response():
             if SystemMessage and isinstance(message, SystemMessage):
                 continue

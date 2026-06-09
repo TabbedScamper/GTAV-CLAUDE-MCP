@@ -916,6 +916,13 @@ def list_namespaces() -> str:
     """List the native namespaces available (for use with search_natives's namespace filter)."""
     return json.dumps(_send_command("list_namespaces"), indent=2)
 
+@mcp.tool()
+def get_context() -> str:
+    """Live snapshot of player + world state for situational awareness: position, zone, health,
+    armour, heading, wanted level, time of day, weather, and current vehicle (model/speed/health).
+    Reads only — safe to call anytime. Fields that can't be read are omitted."""
+    return json.dumps(_send_command("get_context"), indent=2)
+
 # =============================================================================
 # Entry Point
 # =============================================================================
