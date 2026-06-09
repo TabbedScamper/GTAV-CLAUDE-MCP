@@ -2131,6 +2131,35 @@ _WEATHER_NAMES = ["EXTRASUNNY", "CLEAR", "CLOUDS", "SMOG", "FOGGY", "OVERCAST", 
                   "XMAS", "HALLOWEEN"]
 _WEATHER_BY_HASH = {_joaat(n): n for n in _WEATHER_NAMES}
 
+_DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+_VEH_CLASSES = ["Compact", "Sedan", "SUV", "Coupe", "Muscle", "Sports Classic", "Sports",
+                "Super", "Motorcycle", "Off-road", "Industrial", "Utility", "Van", "Cycle",
+                "Boat", "Helicopter", "Plane", "Service", "Emergency", "Military",
+                "Commercial", "Train", "Open Wheel"]
+_WEAPON_NAMES = ["WEAPON_UNARMED", "WEAPON_KNIFE", "WEAPON_NIGHTSTICK", "WEAPON_BAT",
+    "WEAPON_CROWBAR", "WEAPON_HAMMER", "WEAPON_MACHETE", "WEAPON_PISTOL", "WEAPON_COMBATPISTOL",
+    "WEAPON_APPISTOL", "WEAPON_PISTOL50", "WEAPON_SNSPISTOL", "WEAPON_HEAVYPISTOL", "WEAPON_REVOLVER",
+    "WEAPON_MICROSMG", "WEAPON_SMG", "WEAPON_ASSAULTSMG", "WEAPON_COMBATPDW", "WEAPON_MACHINEPISTOL",
+    "WEAPON_MG", "WEAPON_COMBATMG", "WEAPON_ASSAULTRIFLE", "WEAPON_CARBINERIFLE",
+    "WEAPON_ADVANCEDRIFLE", "WEAPON_SPECIALCARBINE", "WEAPON_BULLPUPRIFLE", "WEAPON_COMPACTRIFLE",
+    "WEAPON_PUMPSHOTGUN", "WEAPON_SAWNOFFSHOTGUN", "WEAPON_ASSAULTSHOTGUN", "WEAPON_HEAVYSHOTGUN",
+    "WEAPON_DBSHOTGUN", "WEAPON_AUTOSHOTGUN", "WEAPON_SNIPERRIFLE", "WEAPON_HEAVYSNIPER",
+    "WEAPON_MARKSMANRIFLE", "WEAPON_GRENADELAUNCHER", "WEAPON_RPG", "WEAPON_MINIGUN",
+    "WEAPON_HOMINGLAUNCHER", "WEAPON_RAILGUN", "WEAPON_GRENADE", "WEAPON_STICKYBOMB",
+    "WEAPON_SMOKEGRENADE", "WEAPON_MOLOTOV", "WEAPON_PROXMINE", "WEAPON_PIPEBOMB",
+    "WEAPON_FIREEXTINGUISHER", "WEAPON_PETROLCAN", "WEAPON_FLARE", "WEAPON_FLAREGUN",
+    "WEAPON_KNUCKLE", "WEAPON_SWITCHBLADE", "WEAPON_PARACHUTE", "WEAPON_STUNGUN"]
+_WEAPON_BY_HASH = {_joaat(n): n.replace("WEAPON_", "") for n in _WEAPON_NAMES}
+
+_PED_FLAGS = [  # each takes (ped) and returns BOOL; only the true ones are reported
+    ("sprinting", "IS_PED_SPRINTING"), ("running", "IS_PED_RUNNING"),
+    ("walking", "IS_PED_WALKING"), ("shooting", "IS_PED_SHOOTING"),
+    ("reloading", "IS_PED_RELOADING"), ("jumping", "IS_PED_JUMPING"),
+    ("climbing", "IS_PED_CLIMBING"), ("falling", "IS_PED_FALLING"),
+    ("ragdoll", "IS_PED_RAGDOLL"), ("swimming", "IS_PED_SWIMMING"),
+    ("underwater", "IS_PED_SWIMMING_UNDER_WATER"), ("melee", "IS_PED_IN_MELEE_COMBAT"),
+    ("diving", "IS_PED_DIVING")]
+
 def _call_native_safe(name, *args, return_type="int"):
     """Call a native BY NAME via the verified allowlist; return its result or None on ANY
     failure. No WAL (these are reads). Never raises - so get_context degrades gracefully."""
@@ -2161,10 +2190,13 @@ def _as_vec3(v):
     return None
 
 def handle_get_context(params: dict) -> dict:
-    """Live player/world snapshot for situational awareness. Reads only; never crashes."""
+    """Live player/world snapshot for situational awareness. Reads only; never crashes.
+    detail='lite' (default) = core fields; detail='full' = + activity flags, weapon,
+    vehicle class/plate/extras, day, next weather, game-state flags, interior."""
     if not (PYLOADER_AVAILABLE and gta and NATIVE_DB.loaded):
         return {"error": "Native calls unavailable (PyLoaderV/DB not ready)"}
 
+    full = params.get("detail") == "full"
     ctx = {}
     ped = _call_native_safe("PLAYER_PED_ID", return_type="int")
     pid = _call_native_safe("PLAYER_ID", return_type="int")
@@ -2172,10 +2204,9 @@ def handle_get_context(params: dict) -> dict:
     # --- Player ---
     player = {}
     if ped:
-        for key, nat, rt in (("health", "GET_ENTITY_HEALTH", "int"),
-                             ("max_health", "GET_PED_MAX_HEALTH", "int"),
-                             ("armour", "GET_PED_ARMOUR", "int")):
-            val = _call_native_safe(nat, ped, return_type=rt)
+        for key, nat in (("health", "GET_ENTITY_HEALTH"), ("max_health", "GET_PED_MAX_HEALTH"),
+                         ("armour", "GET_PED_ARMOUR")):
+            val = _call_native_safe(nat, ped, return_type="int")
             if val is not None:
                 player[key] = val
         heading = _call_native_safe("GET_ENTITY_HEADING", ped, return_type="float")
@@ -2194,19 +2225,18 @@ def handle_get_context(params: dict) -> dict:
     if player:
         ctx["player"] = player
 
-    # --- Time of day ---
+    # --- Time + weather ---
     hours = _call_native_safe("GET_CLOCK_HOURS", return_type="int")
     mins = _call_native_safe("GET_CLOCK_MINUTES", return_type="int")
     if hours is not None and mins is not None:
         ctx["time"] = f"{hours:02d}:{mins:02d}"
-
-    # --- Weather (hash -> name where known) ---
     wh = _call_native_safe("GET_PREV_WEATHER_TYPE_HASH_NAME", return_type="int")
     if wh is not None:
         wh32 = int(wh) & 0xFFFFFFFF
         ctx["weather"] = _WEATHER_BY_HASH.get(wh32, f"0x{wh32:X}")
 
     # --- Vehicle (None = on foot) ---
+    veh = None
     if ped:
         in_veh = _call_native_safe("IS_PED_IN_ANY_VEHICLE", ped, False, return_type="bool")
         veh = _call_native_safe("GET_VEHICLE_PED_IS_IN", ped, False, return_type="int") if in_veh else None
@@ -2228,6 +2258,73 @@ def handle_get_context(params: dict) -> dict:
             ctx["vehicle"] = vehicle
         else:
             ctx["vehicle"] = None
+
+    if not full:
+        return {"success": True, "context": ctx}
+
+    # ===== FULL detail (still one round-trip; all reads are microseconds) =====
+    if ped:
+        active = [name for name, nat in _PED_FLAGS if _call_native_safe(nat, ped, return_type="bool")]
+        if _call_native_safe("IS_PED_IN_COVER", ped, False, return_type="bool"):
+            active.append("in_cover")
+        if _call_native_safe("IS_ENTITY_IN_AIR", ped, return_type="bool"):
+            active.append("in_air")
+        if active:
+            ctx["activity"] = active
+        w = _call_native_safe("GET_SELECTED_PED_WEAPON", ped, return_type="int")
+        if w is not None:
+            wh2 = int(w) & 0xFFFFFFFF
+            weapon = {"name": _WEAPON_BY_HASH.get(wh2, f"0x{wh2:X}")}
+            ammo = _call_native_safe("GET_AMMO_IN_PED_WEAPON", ped, w, return_type="int")
+            if ammo is not None:
+                weapon["ammo"] = ammo
+            ctx["weapon"] = weapon
+
+    # World extras
+    dow = _call_native_safe("GET_CLOCK_DAY_OF_WEEK", return_type="int")
+    if dow is not None and 0 <= dow < 7:
+        ctx["day"] = _DAYS[dow]
+    nw = _call_native_safe("GET_NEXT_WEATHER_TYPE_HASH_NAME", return_type="int")
+    if nw is not None:
+        nw32 = int(nw) & 0xFFFFFFFF
+        ctx["weather_next"] = _WEATHER_BY_HASH.get(nw32, f"0x{nw32:X}")
+
+    # Game-state flags
+    gs = []
+    if _call_native_safe("IS_SCREEN_FADED_OUT", return_type="bool"):
+        gs.append("screen_faded")
+    if _call_native_safe("IS_CUTSCENE_PLAYING", return_type="bool"):
+        gs.append("cutscene")
+    if pid is not None:
+        if _call_native_safe("IS_PLAYER_DEAD", pid, return_type="bool"):
+            gs.append("dead")
+        if _call_native_safe("IS_PLAYER_FREE_AIMING", pid, return_type="bool"):
+            gs.append("free_aiming")
+    if gs:
+        ctx["game_state"] = gs
+
+    # Interior
+    if ped:
+        interior = _call_native_safe("GET_INTERIOR_FROM_ENTITY", ped, return_type="int")
+        if interior:
+            ctx["interior_id"] = interior
+
+    # Vehicle extras (augment the vehicle dict built above)
+    if veh and isinstance(ctx.get("vehicle"), dict):
+        v = ctx["vehicle"]
+        cls = _call_native_safe("GET_VEHICLE_CLASS", veh, return_type="int")
+        if cls is not None and 0 <= cls < len(_VEH_CLASSES):
+            v["class"] = _VEH_CLASSES[cls]
+        plate = _call_native_safe("GET_VEHICLE_NUMBER_PLATE_TEXT", veh, return_type="string")
+        if plate:
+            v["plate"] = plate.strip()
+        tank = _call_native_safe("GET_VEHICLE_PETROL_TANK_HEALTH", veh, return_type="float")
+        if tank is not None:
+            v["tank_health"] = round(tank)
+        if _call_native_safe("GET_IS_VEHICLE_ENGINE_RUNNING", veh, return_type="bool"):
+            v["engine_on"] = True
+        if _call_native_safe("IS_VEHICLE_ON_ALL_WHEELS", veh, return_type="bool"):
+            v["all_wheels"] = True
 
     return {"success": True, "context": ctx}
 

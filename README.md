@@ -79,9 +79,12 @@ See [`TESTING.md`](TESTING.md) for the full first-run checklist and smoke tests.
 
 ## What Claude can do
 
-- **Situational awareness:** every in-game message is auto-prefixed with live state (location,
-  vehicle, speed, time, weather, wanted level, health) via `get_context`, so replies are aware of
-  what's actually happening — e.g. *"in a ADDER (87 mph), in VINEWOOD, 14:30, THUNDER, wanted 2★"*.
+- **Situational awareness:** `get_context` reads a full live snapshot (location, vehicle + class/
+  plate/engine, speed, weapon + ammo, activity flags, time/weather, wanted level, health, game
+  state) in one ~30ms call. The host pulls it on every message and **trims to what's relevant to
+  that message** — e.g. *"in a ADDER (112 mph), in VINEWOOD, 21:45, THUNDER, wanted 3★, weapon
+  CARBINERIFLE x90, (sprinting, shooting)"* for a combat message — so replies are aware without
+  bloating the conversation. Claude can also call `get_context(detail="full")` on demand.
 - **Convenience tools:** `spawn_vehicle`, `teleport`, `set_weather`, `set_time`, `give_weapon`,
   `repair_vehicle`, `get_player_ped`, `set_invincible`, `set_health`, `set_wanted_level`.
 - **Any native, safely:** `search_natives`, `native_info`, and `call_native` (by name). The native

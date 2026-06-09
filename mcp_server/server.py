@@ -917,11 +917,15 @@ def list_namespaces() -> str:
     return json.dumps(_send_command("list_namespaces"), indent=2)
 
 @mcp.tool()
-def get_context() -> str:
-    """Live snapshot of player + world state for situational awareness: position, zone, health,
-    armour, heading, wanted level, time of day, weather, and current vehicle (model/speed/health).
-    Reads only — safe to call anytime. Fields that can't be read are omitted."""
-    return json.dumps(_send_command("get_context"), indent=2)
+def get_context(detail: str = "lite") -> str:
+    """Live snapshot of player + world state for situational awareness. Reads only, safe anytime.
+    detail='lite' (default): position, zone, health/armour, heading, wanted level, time, weather,
+    current vehicle (model/speed/health).
+    detail='full': also activity flags (sprinting/shooting/swimming/in_cover/in_air/...), current
+    weapon + ammo, vehicle class/plate/tank/engine, day of week, next weather, game-state flags
+    (cutscene/screen_faded/dead/free_aiming), interior id.
+    Fields that can't be read are omitted."""
+    return json.dumps(_send_command("get_context", {"detail": detail}), indent=2)
 
 # =============================================================================
 # Entry Point

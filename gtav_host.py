@@ -200,12 +200,30 @@ def _extract_text(message) -> str:
             parts.append(t)
     return "".join(parts)
 
-def _format_context(ctx: dict) -> str:
-    """Compact one-liner of live game state for prepending to each message."""
+# Keyword groups that decide which detail blocks get attached to a message.
+_KW_VEHICLE = ("drive", "car", "vehicle", "race", "speed", "fast", "engine", "fix", "repair",
+               "fuel", "crash", "wheel", "tyre", "tire", "ride", "bike", "boat", "plane", "heli")
+_KW_COMBAT = ("shoot", "gun", "weapon", "kill", "fight", "ammo", "reload", "aim", "combat",
+              "enemy", "attack", "armour", "armor")
+_KW_WANTED = ("cop", "police", "wanted", "star", "escape", "lose", "heat", "busted", "arrest")
+_KW_WHERE = ("where", "location", "area", "here", "place", "map", "coord", "position", "nearby")
+
+# Activity flags worth surfacing even when unprompted (high-signal situations).
+_NOTABLE_ACTIVITY = {"in_air", "swimming", "underwater", "ragdoll", "in_cover", "falling",
+                     "climbing", "diving", "parachuting"}
+
+def _format_context(ctx: dict, msg: str = "") -> str:
+    """Lean core + message-relevant expansion. Full snapshot is pulled (cheap) but only the
+    parts that matter for THIS message are injected, so history stays small and fresh."""
     if not ctx:
         return ""
-    parts = []
+    m = (msg or "").lower()
+    has = lambda words: any(w in m for w in words)
+    p = ctx.get("player") or {}
     veh = ctx.get("vehicle")
+    parts = []
+
+    # --- always-on core ---
     if veh:
         s = "in a " + veh.get("model", "vehicle")
         if "speed_mph" in veh:
@@ -219,21 +237,50 @@ def _format_context(ctx: dict) -> str:
         parts.append(ctx["time"])
     if ctx.get("weather"):
         parts.append(ctx["weather"])
-    p = ctx.get("player") or {}
     if "wanted_level" in p:
         parts.append(f"wanted {p['wanted_level']}*")
     if "health" in p:
-        parts.append(f"hp {p['health']}" + (f"/{p['max_health']}" if "max_health" in p else ""))
+        parts.append("hp " + str(p["health"]) + (f"/{p['max_health']}" if "max_health" in p else ""))
+
+    # --- message-relevant expansion ---
+    if veh and has(_KW_VEHICLE):
+        if veh.get("class"):
+            parts.append(veh["class"])
+        if "engine_health" in veh:
+            parts.append(f"engine {veh['engine_health']}")
+        if "body_health" in veh:
+            parts.append(f"body {veh['body_health']}")
+        if veh.get("plate"):
+            parts.append(f"plate {veh['plate']}")
+    if has(_KW_COMBAT):
+        w = ctx.get("weapon") or {}
+        if w.get("name"):
+            parts.append("weapon " + w["name"] + (f" x{w['ammo']}" if "ammo" in w else ""))
+        if "armour" in p:
+            parts.append(f"armour {p['armour']}")
+    if has(_KW_WANTED) and ctx.get("game_state"):
+        parts.append("[" + ", ".join(ctx["game_state"]) + "]")
+    if has(_KW_WHERE) and p.get("position"):
+        pos = p["position"]
+        parts.append(f"@({pos['x']:.0f},{pos['y']:.0f},{pos['z']:.0f})")
+
+    # --- notable activity (always) + full activity when fighting ---
+    activity = ctx.get("activity") or []
+    shown = activity if has(_KW_COMBAT) else [a for a in activity if a in _NOTABLE_ACTIVITY]
+    if shown:
+        parts.append("(" + ", ".join(shown) + ")")
+
     return ", ".join(parts)
 
 async def handle_message(client, user_text: str, transcript: Transcript):
     transcript.add(f"> {user_text}")
     transcript.add("Claude: ...")
     # Auto-feed live game state so Claude is situationally aware (best-effort, non-fatal).
+    # Full pull (cheap - one round-trip), then trim to what's relevant to THIS message.
     prompt = user_text
     try:
-        r = await asyncio.to_thread(bridge_send, "get_context")
-        ctx_line = _format_context(r.get("context") or {}) if r.get("success") else ""
+        r = await asyncio.to_thread(bridge_send, "get_context", {"detail": "full"})
+        ctx_line = _format_context(r.get("context") or {}, user_text) if r.get("success") else ""
         if ctx_line:
             prompt = f"[Live game state: {ctx_line}]\n\n{user_text}"
     except Exception:
