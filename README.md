@@ -6,8 +6,14 @@ call any of ~6,700 game natives, and read/write vehicle memory (e.g. a wheel-fit
 
 **Single-player only.** This is a memory-editing/modding tool; never use it in GTA Online.
 
-> Status: implemented and validated off-game (compiles, unit/round-trip tests pass). In-game
-> end-to-end testing requires a live GTA V install with the modding prerequisites below.
+> ## 🚧 Work in progress
+> This project is an active **WIP** and not yet fully tested in-game — expect rough edges, breaking
+> changes, and things that don't work yet. It's implemented and validated off-game (compiles,
+> unit/round-trip tests pass), but full in-game end-to-end testing on a live GTA V install is still
+> ongoing. Use at your own risk. Feedback and issues welcome.
+
+> **Credit:** if you use, fork, or build on this, please credit **TabbedScamper** and link back to
+> this repo (<https://github.com/TabbedScamper/GTAV-CLAUDE-MCP>). See [Credits](#credits).
 
 ## How it works
 
@@ -124,6 +130,14 @@ requirements.txt        # Python deps (claude-agent-sdk, mcp)
 TESTING.md / CLAUDE.md  # first-run guide / project notes
 ```
 
+## Credits
+
+Created by **TabbedScamper** — <https://github.com/TabbedScamper/GTAV-CLAUDE-MCP>
+
+If you use, fork, or build on this project, please **credit TabbedScamper and link back to this
+repo**. The MIT license also requires retaining the copyright and license notice. A mention in
+your README/mod description or a link back is all I ask. 🙏
+
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). © 2026 TabbedScamper.
