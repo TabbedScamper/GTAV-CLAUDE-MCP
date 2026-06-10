@@ -76,6 +76,14 @@ $lemon = Join-Path $proj 'ui_companion\bin\Release\LemonUI.SHVDN3.dll'
 if (Test-Path $lemon) { Copy-Item $lemon $scriptsDir -Force; Write-Host "  + scripts\LemonUI.SHVDN3.dll" }
 else { Write-Host "  ! LemonUI.SHVDN3.dll missing from build output" -ForegroundColor Yellow }
 
+# Claude Radio (in-game NAudio player) + its NAudio dependency.
+$radioRel = Join-Path $proj 'radio\ClaudeRadio\bin\Release'
+foreach ($f in 'ClaudeRadio.dll','NAudio.dll') {
+    $src = Join-Path $radioRel $f
+    if (Test-Path $src) { Copy-Item $src $scriptsDir -Force; Write-Host "  + scripts\$f" }
+    else { Write-Host "  ! $f not built (build radio\ClaudeRadio first)" -ForegroundColor Yellow }
+}
+
 # Clear stale bytecode so F9 reload picks up the new bridge
 Remove-Item (Join-Path $pyDir '__pycache__') -Recurse -Force -ErrorAction SilentlyContinue
 

@@ -32,6 +32,45 @@ params under `usage_notes`. If the DB fails to load, native calls are **refused 
 `teleport`, `set_weather`, `set_time`, `give_weapon`, `repair_vehicle`. Prefer these over hand-built native
 chains for the common actions — they avoid arg-order mistakes.
 
+## Deep-Dive Toolkit — read the EXTRACTED game files (gtadata_* tools)
+
+**Never answer game-data questions from memory** - your training recall of GTA internals (station
+internal names, tracklists, offsets) is frequently wrong. The FlyLo FM test proved it: a from-memory
+answer listed artists as if they were tracks, when the actual data shows ONE mix-list of 2 tracks.
+Always verify with the tools below; if they can't confirm it, say so instead of guessing.
+
+For "how is X DEFINED in the game?" questions (handling, mod kits/carvariations, radio/audio,
+vehicles.meta, where a model file lives) use the `gtadata_*` tools. They read the fully
+**extracted + NG-decrypted** Legacy game files on disk — *offline data*, distinct from the live-memory
+tools. Fast by design: a prebuilt path manifest + a decoded-XML cache + a growing JOAAT name dictionary
+(every name cracked is remembered, so repeat lookups are near-instant).
+
+**Workflow (the 5 steps):**
+1. **Resolve the friendly name to its INTERNAL id first** — e.g. "Rebel Radio" → `RADIO_06_COUNTRY`
+   (grepping "rebel" finds the *Rebel truck*, not the station). If unsure of the internal id, ask the
+   PC-side Claude (it can web-search the convention).
+2. `gtadata_find("radio_06")` → file paths. **Never** recursive-scan the tree (379k files; it times out).
+3. Binary audio (`.rel`/dat54/dat151)? `gtadata_decode(path)` → cached XML with hashes auto-resolved.
+   Text (`.meta`/`.xml`) is already readable — skip decode.
+4. `gtadata_read(xml_path, pattern="RADIO_06_COUNTRY")` to grep the part you need.
+5. See a `hash_XXXXXXXX`? `gtadata_resolve` it; if unknown, `gtadata_crack([hashes], [candidate names])`
+   by convention — hits are learned permanently and auto-resolve in all future decodes.
+
+**Known conventions:** radio station = `RADIO_<NN>_<GENRE>` (Rebel = `RADIO_06_COUNTRY`,
+FlyLo FM = `RADIO_14_DANCE_02`); its track lists = `RADIO_06_COUNTRY_MUSIC` / `_DJSOLO` / `_IDENTS`;
+song sounds = `RADIO_06_COUNTRY_<TITLE>` e.g. `RADIO_06_COUNTRY_CONVOY`. Play a station's music with
+`SET_RADIO_TRACK("RADIO_06_COUNTRY", "<tracklist>")`.
+
+**RADIO RECIPE (important - there is NO file named after a station):** all radio station/tracklist/song
+DEFINITIONS live INSIDE one file: `update\update\x64\audio\config\game.dat151.rel`. Do NOT search for a
+file called "radio_14" or "flylo" - there isn't one. Instead:
+1. `gtadata_decode("...\update\update\x64\audio\config\game.dat151.rel")` (already cached -> instant).
+2. `gtadata_read(xml_path, pattern="RADIO_14_DANCE_02")` -> the station's `<TrackList>` (track-list hashes).
+3. `gtadata_read(xml_path, pattern="<that tracklist name/hash>")` -> the `<SoundRef>` song hashes.
+4. `gtadata_resolve` each; unknown ones -> `gtadata_crack` with `RADIO_14_DANCE_02_<TITLE>` candidates.
+Note: the radio CONFIG (this file) IS extracted; only the base-game wave AUDIO (.awc) is missing - so you
+CAN read the full station/tracklist/song-name structure, you just can't play the raw wave from disk.
+
 ## Verify rules — DON'T re-guess on "failure" (this caused crashes)
 
 The Fort-Zancudo loop — clear wanted level → game instantly re-sets it → assume "wrong hash" → try a

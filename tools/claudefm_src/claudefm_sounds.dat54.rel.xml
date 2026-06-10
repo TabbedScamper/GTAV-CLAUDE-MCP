@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Dat54>
+ <Version value="7314721" />
+ <ContainerPaths>
+  <Item>DLC_CLAUDEFM\CLAUDEFM</Item>
+ </ContainerPaths>
+ <Items>
+  <Item type="StreamingSound">
+   <Name>claudefm_track</Name>
+   <Header>
+    <Flags value="0x0180C001" />
+    <Flags2 value="0xAA90AAAA" />
+    <DopplerFactor value="0" />
+    <Category>hash_45EB536F</Category>
+    <SpeakerMask value="0" />
+    <EffectRoute value="1" />
+   </Header>
+   <Duration value="2000" />
+   <ChildSounds>
+    <Item>claudefm_left_snd</Item>
+    <Item>claudefm_right_snd</Item>
+   </ChildSounds>
+  </Item>
+  <Item type="SimpleSound">
+   <Name>claudefm_left_snd</Name>
+   <Header>
+    <Flags value="0x00800040" />
+    <Pan value="307" />
+    <SpeakerMask value="0" />
+   </Header>
+   <ContainerName>dlc_claudefm/claudefm</ContainerName>
+   <FileName>claudefm_left</FileName>
+   <WaveSlotIndex value="0" />
+  </Item>
+  <Item type="SimpleSound">
+   <Name>claudefm_right_snd</Name>
+   <Header>
+    <Flags value="0x00800040" />
+    <Pan value="53" />
+    <SpeakerMask value="0" />
+   </Header>
+   <ContainerName>dlc_claudefm/claudefm</ContainerName>
+   <FileName>claudefm_right</FileName>
+   <WaveSlotIndex value="0" />
+  </Item>
+ </Items>
+</Dat54>

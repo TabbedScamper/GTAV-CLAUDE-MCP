@@ -1,24 +1,58 @@
-# Python
+# ---- secrets / machine-local config (never commit) ----
+gtadata_local.json
+**/gtadata_local.json
+*.env
+.env
+*.secret
+host_path.txt
+
+# ---- Python ----
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 *.egg-info/
 
-# Runtime / local
+# ---- Runtime / local ----
 pyscript/crash_logs/
 pyscript/session_findings.json
 *.log
 
-# C# build output - EXCEPT the two prebuilt DLLs we ship for convenience
+# ---- Node (native-audio-tool: third-party tool, re-clonable; AWC already in tools/claudefm_dlc) ----
+node_modules/
+tools/native-audio-tool/
+
+# ---- C# build output - EXCEPT the prebuilt DLLs we ship for convenience ----
 ui_companion/obj/
 ui_companion/bin/*
 !ui_companion/bin/Release/
 ui_companion/bin/Release/*
 !ui_companion/bin/Release/ClaudeChatUI.dll
 !ui_companion/bin/Release/LemonUI.SHVDN3.dll
+radio/ClaudeRadio/obj/
+radio/ClaudeRadio/bin/*
+!radio/ClaudeRadio/bin/Release/
+radio/ClaudeRadio/bin/Release/*
+!radio/ClaudeRadio/bin/Release/ClaudeRadio.dll
 
-# Editor / OS
+# ---- Large / derived / vendored data (machine-local; regenerated or downloaded) ----
+# Decoded Rockstar game data + JOAAT cache (large, not ours to publish)
+gtadata/
+# Bundled ffmpeg/ffprobe binaries (download separately; see README)
+radio/bin/ffmpeg.exe
+radio/bin/ffprobe.exe
+# DLC packing scratch
+tools/claudefm_build*/
+*.tmp
+
+# ---- Runtime music library (lives in %LOCALAPPDATA%; copyrighted - never commit) ----
+music/
+adverts/
+*.mp3
+*.m4a
+*.opus
+
+# ---- Editor / OS ----
 .vs/
 .idea/
 *.user

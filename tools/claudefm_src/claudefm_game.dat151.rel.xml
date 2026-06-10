@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Dat151>
+ <Version value="7516460" />
+ <Items>
+  <Item type="RadioStationList" ntOffset="0">
+   <Name>radio_stations_dlc</Name>
+   <Stations>
+    <Item>claudefm_station</Item>
+   </Stations>
+  </Item>
+  <Item type="RadioStationSettings" ntOffset="0">
+   <Name>claudefm_station</Name>
+   <Flags value="0xAAA80955" />
+   <WheelPosition value="28000" />
+   <Genre value="7" />
+   <AmbientRadioVol value="0" />
+   <RadioName>RADIO_49_COMMUNITYSLOT</RadioName>
+   <TrackList>
+    <Item>claudefm_tracklist</Item>
+   </TrackList>
+  </Item>
+  <Item type="RadioStationTrackList" ntOffset="0">
+   <Name>claudefm_tracklist</Name>
+   <Unk00 value="0xAAAAAAA0" />
+   <TrackType value="2" />
+   <Unk01 value="0" />
+   <Unk02 value="0" />
+   <Unk03 value="10" />
+   <Tracks>
+    <Item>
+     <Context />
+     <SoundRef>claudefm_track</SoundRef>
+    </Item>
+   </Tracks>
+  </Item>
+ </Items>
+</Dat151>

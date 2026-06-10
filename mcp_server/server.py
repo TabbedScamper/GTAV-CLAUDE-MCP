@@ -25,6 +25,18 @@ from typing import Optional, Any
 from dataclasses import dataclass, field
 from mcp.server.fastmcp import FastMCP
 
+# gtadata: fast deep-dive toolkit over the extracted/decrypted game files (manifest, decode, hashes)
+try:
+    from . import gtadata
+except ImportError:  # when run as a loose script rather than a package
+    import gtadata
+
+# radio: Claude Radio - local library + yt-dlp fetch, plays in-game via ClaudeRadio.dll
+try:
+    from . import radio
+except ImportError:
+    import radio
+
 # =============================================================================
 # Configuration
 # =============================================================================
@@ -982,6 +994,197 @@ def get_findings() -> str:
 def clear_findings() -> str:
     """Reset the session findings (goal + offsets + notes)."""
     return json.dumps(_send_command("clear_findings"), indent=2)
+
+# =============================================================================
+# Deep-dive tools - the EXTRACTED/DECRYPTED game files on disk (offline data, not live memory)
+# =============================================================================
+# Use these to look up how the game is DEFINED (handling, mod kits, radio/audio, vehicles.meta,
+# model file locations) - distinct from the live-memory tools above. Fast: a prebuilt manifest +
+# decoded-XML cache + a growing JOAAT name dictionary, so repeat lookups are near-instant.
+# Workflow: gtadata_find (locate) -> gtadata_decode (if binary .rel) -> gtadata_read (grep) ->
+# gtadata_resolve/gtadata_crack (turn hashes into names; cracked names are remembered).
+
+@mcp.tool()
+def gtadata_find(pattern: str, limit: int = 50, regex: bool = False) -> str:
+    """
+    Find file paths in the extracted GTA V game tree (379k files) by substring (default) or regex.
+    Instant - greps a prebuilt manifest, no filesystem scan (recursive scans time out, don't try them).
+
+    Args:
+        pattern: substring (e.g. "handling.meta", "radio_06") or regex if regex=True
+        limit: max results (default 50)
+        regex: treat pattern as a regex
+    Returns: JSON list of full file paths. Tip: resolve a friendly name to its INTERNAL id first
+             (e.g. "Rebel Radio" -> "radio_06_country") - grepping the friendly name finds the wrong thing.
+    """
+    return json.dumps(gtadata.find(pattern, limit=limit, regex=regex), indent=2)
+
+
+@mcp.tool()
+def gtadata_read(path: str, pattern: Optional[str] = None, limit: int = 200, context: int = 0) -> str:
+    """
+    Read a TEXT game file (.meta/.xml/...). With `pattern`, returns matching lines (grep) instead.
+
+    Args:
+        path: full path (from gtadata_find), or the cached .xml from gtadata_decode
+        pattern: optional regex - return only matching lines (with `context` lines around each)
+        limit: max lines (or max matches when pattern is set)
+        context: lines of context around each match
+    Returns: file text or matching lines.
+    """
+    return gtadata.read_text(path, pattern=pattern, limit=limit, context=context)
+
+
+@mcp.tool()
+def gtadata_decode(path: str, force: bool = False) -> str:
+    """
+    Make a game file readable. Text files (.meta/.xml) are returned as-is; binary AUDIO metadata
+    (.rel / dat54 / dat151 - radio stations, track lists, sounds) is decoded to XML via CodeWalker
+    and CACHED. Then gtadata_read the returned xml_path. (Model/texture .ydr/.yft/.ytd are binary -
+    those still need the CodeWalker GUI.)
+
+    Args:
+        path: full path to a .rel/.meta from gtadata_find
+        force: re-decode even if a cached XML exists
+    Returns: JSON {ok, kind, xml_path|path, note}.
+    """
+    return json.dumps(gtadata.decode(path, force=force), indent=2)
+
+
+@mcp.tool()
+def gtadata_resolve(hash: str) -> str:
+    """
+    Resolve a JOAAT hash (e.g. "hash_26F5A0D9", "0x26F5A0D9") to a readable name using the known-name
+    dictionary. Use it to turn the `hash_XXXXXXXX` refs in decoded audio XML into real names.
+
+    Returns: JSON {hash, name|null}.
+    """
+    name = gtadata.resolve(hash)
+    return json.dumps({"hash": str(hash), "name": name, "hex": f"{gtadata._as_hash(hash):08X}"}, indent=2)
+
+
+@mcp.tool()
+def gtadata_crack(target_hashes: list[str], candidates: list[str], learn: bool = True) -> str:
+    """
+    Crack unknown JOAAT hashes by testing candidate NAMES against them (the names in the game files
+    are joaat hashes of internal strings). Generate `candidates` from a known list/convention - e.g.
+    for Rebel Radio songs: ["RADIO_06_COUNTRY_CONVOY", "RADIO_06_COUNTRY_WHISKEY_RIVER", ...].
+    Convention seen: radio track sounds are "RADIO_<NN>_<GENRE>_<TITLE_WORDS>".
+
+    Args:
+        target_hashes: the unknown hashes (e.g. SoundRef values from decoded XML)
+        candidates: full candidate name strings to test
+        learn: remember any hits (append to the name dictionary) so future decodes auto-resolve them
+    Returns: JSON {hexhash: name} for matches.
+    """
+    return json.dumps(gtadata.crack(target_hashes, candidates, learn=learn), indent=2)
+
+
+@mcp.tool()
+def gtadata_learn(name: str) -> str:
+    """Permanently add a confirmed internal name to the dictionary (so its hash resolves from now on)."""
+    return json.dumps({"name": name, "hex": f"{gtadata.joaat(name):08X}", "new": gtadata.add_name(name)}, indent=2)
+
+
+@mcp.tool()
+def gtadata_joaat(name: str) -> str:
+    """Compute the JOAAT hash of a name (lowercased), the hash GTA/CodeWalker use for internal names."""
+    return json.dumps({"name": name, "hash": f"0x{gtadata.joaat(name):08X}", "hash_fmt": f"hash_{gtadata.joaat(name):08X}"})
+
+
+# =============================================================================
+# Claude Radio - play any song in-game (local library + on-demand yt-dlp fetch)
+# =============================================================================
+# A real in-game radio experience with NO Spotify/Premium/DRM. Songs are local files; new ones are
+# fetched from YouTube and cached, then played in-game by ClaudeRadio.dll (NAudio). Library folder is
+# native to the mod (%LOCALAPPDATA%\GTAV-Claude-MCP\music by default) and user-configurable.
+
+@mcp.tool()
+def play_song(query: str) -> str:
+    """
+    Play a song in-game on Claude Radio. Finds it in the local library (instant) or fetches it from
+    YouTube (~few seconds), then plays it. Use a natural query: "Smokin and Ridin", "Convoy CW McCall".
+
+    Returns: JSON {playing, artist, fetched, file}. If fetched=true it was just downloaded.
+    Tip: tell the user "fetching..." may take a few seconds for a brand-new song; cached songs are instant.
+    """
+    try:
+        return json.dumps(radio.play(query), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def queue_song(query: str) -> str:
+    """Add a song to the Claude Radio queue (find-or-fetch, then append). Returns JSON {queued, fetched}."""
+    try:
+        return json.dumps(radio.queue(query), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def radio_control(action: str, volume: int = 100) -> str:
+    """
+    Transport control for Claude Radio. action one of: "pause", "resume", "skip", "stop", "volume".
+    For "volume", pass volume=0..100.
+    """
+    a = action.lower().strip()
+    fn = {"pause": radio.pause, "resume": radio.resume, "skip": radio.skip, "stop": radio.stop}.get(a)
+    if fn:
+        return json.dumps(fn())
+    if a == "volume":
+        return json.dumps(radio.set_volume(volume))
+    return json.dumps({"error": f"unknown action '{action}' (pause|resume|skip|stop|volume)"})
+
+
+@mcp.tool()
+def radio_now_playing() -> str:
+    """What's currently on Claude Radio (state, title, position) - read from the in-game player."""
+    return json.dumps(radio.read_status(), indent=2)
+
+
+@mcp.tool()
+def radio_library(search: str = "") -> str:
+    """List/search the local Claude Radio music library (downloaded + user-dropped songs)."""
+    return json.dumps(radio.library_list(search), indent=2)
+
+
+@mcp.tool()
+def radio_set_music_folder(path: str) -> str:
+    """Point Claude Radio's library at a folder (e.g. the user's own music collection), then index it."""
+    try:
+        return json.dumps(radio.set_music_folder(path), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def radio_rescan() -> str:
+    """Re-index the music folder so songs the user dropped in by hand become playable. Returns counts."""
+    try:
+        return json.dumps(radio.rescan(), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def radio_clear_library() -> str:
+    """Delete ALL downloaded songs and reset the library (stops playback first). Reversible - songs
+    re-download on demand. Confirm with the user before calling; this empties their music folder."""
+    try:
+        return json.dumps(radio.clear_library(), indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+@mcp.tool()
+def reload_scripts() -> str:
+    """Reload the in-game ScriptHookVDotNet C# scripts (ClaudeRadio, ClaudeChatUI) by simulating the
+    Insert key - so a freshly-built/deployed DLL loads with NO manual keypress. Use after deploying a
+    new ClaudeRadio.dll. (Key map: Insert = SHVDN/C# scripts; F9 = the PyLoaderV bridge itself.)"""
+    return json.dumps(_send_command("reload_scripts"), indent=2)
+
 
 # =============================================================================
 # Entry Point

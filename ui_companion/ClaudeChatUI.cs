@@ -45,7 +45,7 @@ namespace ClaudeChatUI
         private const float HEADER_H = 36f;
         private const float FOOTER_H = 30f;
         private const float PAD = 12f;
-        private const int WRAP_CHARS = 64;       // monospace -> char-count wrap is accurate
+        private const int WRAP_CHARS = 58;       // approx char-count wrap (ChaletLondon is proportional)
 
         // ---- Reused LemonUI elements (created once, repositioned each frame) ----
         private ScaledRectangle bg, header, footer, scrollTrack, scrollThumb;
@@ -60,7 +60,8 @@ namespace ClaudeChatUI
             Directory.CreateDirectory(msgDir);
 
             BuildUI();
-            AutoLaunchClaude();
+            // AutoLaunchClaude();  // DISABLED: Insert reloads this script and was spawning duplicate
+            // hosts. Run the host manually via run_host.bat (single-instance guard keeps it to one).
 
             try
             {
@@ -91,13 +92,32 @@ namespace ClaudeChatUI
             lineTexts = new ScaledText[VISIBLE_LINES];
             for (int i = 0; i < VISIBLE_LINES; i++)
             {
-                lineTexts[i] = new ScaledText(PointF.Empty, "", TEXT_SCALE, Font.Monospace)
+                // ChaletLondon (the default game font) has full upper/lowercase + punctuation.
+                // GTA's "Monospace" font is uppercase-only and lacks . - : ' etc -> they draw as
+                // tofu boxes, which is what caused the garbled panel.
+                lineTexts[i] = new ScaledText(PointF.Empty, "", TEXT_SCALE, Font.ChaletLondon)
                 {
                     Color = Color.FromArgb(255, 210, 210, 210),
                     Outline = true,
                     Alignment = Alignment.Left,
                 };
             }
+        }
+
+        // True if a host is actually running (it holds localhost:27099 while in its main loop).
+        private static bool IsHostRunning()
+        {
+            try
+            {
+                using (var c = new System.Net.Sockets.TcpClient())
+                {
+                    var ar = c.BeginConnect("127.0.0.1", 27099, null, null);
+                    bool ok = ar.AsyncWaitHandle.WaitOne(400) && c.Connected;
+                    if (ok) c.EndConnect(ar);
+                    return ok;
+                }
+            }
+            catch { return false; }
         }
 
         private void AutoLaunchClaude()
@@ -115,9 +135,11 @@ namespace ClaudeChatUI
                     return;
                 }
 
-                // Already running? (python process started from our bat keeps the host alive)
-                if (Process.GetProcessesByName("python").Length > 0 ||
-                    Process.GetProcessesByName("ConsoleTrigger").Length > 0)
+                // Already running? The host binds a single-instance lock port (27099) while in its main
+                // loop - far more reliable than counting "python" processes (which match unrelated apps
+                // and miss pythonw). If a host already holds the lock, do NOT launch another. This is the
+                // fix for Insert piling up duplicate hosts that fought over the message queue.
+                if (IsHostRunning())
                     return;
 
                 Process.Start(new ProcessStartInfo
@@ -164,7 +186,7 @@ namespace ClaudeChatUI
                 if (len <= 0 || len > 60000) return;
                 byte[] data = new byte[len];
                 sharedMemAccessor.ReadArray(4, data, 0, len);
-                string content = Encoding.UTF8.GetString(data);
+                string content = AsciiFold(Encoding.UTF8.GetString(data));
                 terminalLines = content.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             }
             catch { }
@@ -172,7 +194,7 @@ namespace ClaudeChatUI
 
         private void DrawTerminal()
         {
-            float vw = 1080f * GTA.UI.Screen.AspectRatio;     // virtual width (≈1920 at 16:9)
+            float vw = 1080f * GTA.UI.Screen.AspectRatio;     // virtual width (~1920 at 16:9)
             float panelH = HEADER_H + VISIBLE_LINES * LINE_PITCH + FOOTER_H + 2 * PAD;
             float x = vw - PANEL_W - 24f;                     // right-anchored
             float y = 80f;
@@ -247,6 +269,44 @@ namespace ClaudeChatUI
             if (trimmed.StartsWith("-") || trimmed.StartsWith("*"))
                 return Color.FromArgb(255, 180, 220, 255);   // bullet - light blue
             return Color.FromArgb(255, 210, 210, 210);       // default - light gray
+        }
+
+        // GTA Monospace font only renders ~ASCII; anything else draws as a "tofu" box.
+        // Fold smart punctuation / bullets / arrows / checks / emoji / accents to safe ASCII
+        // so the panel never shows boxes, regardless of what wrote the text.
+        private static string AsciiFold(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return s;
+            var sb = new StringBuilder(s.Length);
+            foreach (char ch in s.Normalize(NormalizationForm.FormKD))  // accents -> base letter
+            {
+                int c = ch;
+                if (c < 128) { sb.Append(ch); continue; }
+                switch (c)
+                {
+                    case 0x2018: case 0x2019: case 0x201A: case 0x201B: sb.Append((char)39); break; // single quotes
+                    case 0x201C: case 0x201D: case 0x201E: case 0x201F: sb.Append((char)34); break; // double quotes
+                    case 0x2013: case 0x2014: case 0x2015: case 0x2212: sb.Append((char)45); break; // dashes / minus
+                    case 0x2026: sb.Append("..."); break;                                           // ellipsis
+                    case 0x2022: case 0x00B7: case 0x25CF: case 0x25AA: case 0x25E6: sb.Append((char)45); break; // bullets
+                    case 0x2192: sb.Append("->"); break;
+                    case 0x2190: sb.Append("<-"); break;
+                    case 0x21D2: sb.Append("=>"); break;
+                    case 0x21D0: sb.Append("<="); break;
+                    case 0x00A0: case 0x2009: case 0x202F: sb.Append((char)32); break;              // nbsp / thin spaces
+                    case 0x2713: case 0x2714: sb.Append((char)118); break;                          // check marks -> v
+                    case 0x2705: sb.Append("[ok]"); break;
+                    case 0x2611: sb.Append("[x]"); break;
+                    case 0x274C: sb.Append((char)88); break;                                        // cross mark -> X
+                    case 0x2717: case 0x2718: sb.Append((char)120); break;                          // cross marks -> x
+                    case 0x2122: sb.Append("(tm)"); break;
+                    case 0x00AE: sb.Append("(r)"); break;
+                    case 0x00A9: sb.Append("(c)"); break;
+                    case 0x00B0: sb.Append("deg"); break;
+                    default: break;  // drop emoji / combining marks / anything else unrenderable
+                }
+            }
+            return sb.ToString();
         }
 
         private static List<string> WrapText(string text, int maxChars)

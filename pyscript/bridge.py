@@ -2657,9 +2657,41 @@ def handle_resolve_rip_relative(params: dict) -> dict:
     return {"success": True, "instruction": f"0x{addr:X}", "displacement": disp,
             "resolved": f"0x{absolute:X}"}
 
+
+def handle_reload_scripts(params: dict) -> dict:
+    """Reload the ScriptHookVDotNet C# scripts (ClaudeRadio, ClaudeChatUI, ...) by simulating the
+    Insert key. Lets Claude load a freshly-deployed DLL with no manual keypress.
+    KEY MAP: Insert = SHVDN (C# scripts). F9 = PyLoaderV (this bridge.py). Different reload keys.
+    This presses INSERT (SHVDN); to reload the bridge itself you still press F9 in-game."""
+    try:
+        u = ctypes.windll.user32
+        VK_INSERT = 0x2D
+        WM_KEYDOWN, WM_KEYUP = 0x0100, 0x0101
+        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP = 0x0001, 0x0002
+        scan = u.MapVirtualKeyW(VK_INSERT, 0) & 0xFF        # virtual key -> scan code
+        ext = 1 << 24                                       # extended-key bit in lParam
+
+        # 1) PostMessage straight to the GTA window (works regardless of focus; SHVDN hooks WndProc).
+        hwnd = u.FindWindowW("grcWindow", None) or u.FindWindowW(None, "Grand Theft Auto V")
+        if hwnd:
+            u.PostMessageW(hwnd, WM_KEYDOWN, VK_INSERT, (scan << 16) | ext | 1)
+            u.PostMessageW(hwnd, WM_KEYUP,   VK_INSERT, (scan << 16) | ext | (0b11 << 30) | 1)
+
+        # 2) Also synthesize the key with the EXTENDED flag (Insert is an extended key - the missing
+        #    flag is why the first attempt sent the wrong keycode). Works if GTA is foreground.
+        u.keybd_event(VK_INSERT, scan, KEYEVENTF_EXTENDEDKEY, 0)
+        u.keybd_event(VK_INSERT, scan, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+
+        log_message("info", "reload_scripts: Insert sent (hwnd=%s)" % hwnd)
+        return {"success": True, "message": "Sent Insert (PostMessage + extended keybd_event)", "hwnd": int(hwnd or 0)}
+    except Exception as e:
+        return {"error": f"reload_scripts failed: {e}"}
+
+
 # Command dispatch table
 COMMANDS = {
     "status": handle_status,
+    "reload_scripts": handle_reload_scripts,
     "read": handle_read,
     "write": handle_write,
     "snapshot": handle_snapshot,

@@ -10,4 +10,6 @@ if exist "%~dp0.venv\Scripts\python.exe" (
     echo [run_host] no .venv found, using system python
     python gtav_host.py
 )
-pause
+REM Only hold the window open on a real error. A clean exit (incl. the single-instance guard, which
+REM exits 0 when another host already runs) closes the window so Insert auto-launches don't pile up.
+if errorlevel 1 pause

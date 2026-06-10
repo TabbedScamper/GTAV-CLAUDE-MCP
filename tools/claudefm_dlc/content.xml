@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CDataFileMgr__ContentsOfDataFileXml>
+    <disabledFiles />
+    <includedXmlFiles />
+    <includedDataFiles />
+    <dataFiles>
+        <Item>
+          <filename>dlc_claudefm:/common/data/dlctext.meta</filename>
+          <fileType>TEXTFILE_METAFILE</fileType>
+          <overlay value="false" />
+          <disabled value="true" />
+          <persistent value="true" />
+        </Item>
+        <Item>
+          <filename>dlc_claudefm:/%PLATFORM%/audio/config/claudefm_game.dat</filename>
+          <fileType>AUDIO_GAMEDATA</fileType>
+          <overlay value="false" />
+          <disabled value="true" />
+          <persistent value="false" />
+        </Item>
+        <Item>
+          <filename>dlc_claudefm:/%PLATFORM%/audio/config/claudefm_sounds.dat</filename>
+          <fileType>AUDIO_SOUNDDATA</fileType>
+          <overlay value="false" />
+          <disabled value="true" />
+          <persistent value="false" />
+        </Item>
+        <Item>
+          <filename>dlc_claudefm:/%PLATFORM%/audio/sfx/dlc_claudefm</filename>
+          <fileType>AUDIO_WAVEPACK</fileType>
+          <overlay value="false" />
+          <disabled value="true" />
+          <persistent value="false" />
+        </Item>
+    </dataFiles>
+    <contentChangeSets>
+        <Item>
+            <changeSetName>CLAUDEFM_AUTOGEN</changeSetName>
+            <mapChangeSetData />
+            <filesToInvalidate />
+            <filesToDisable />
+            <filesToEnable>
+                <Item>dlc_claudefm:/common/data/dlctext.meta</Item>
+                <Item>dlc_claudefm:/%PLATFORM%/audio/config/claudefm_game.dat</Item>
+                <Item>dlc_claudefm:/%PLATFORM%/audio/config/claudefm_sounds.dat</Item>
+                <Item>dlc_claudefm:/%PLATFORM%/audio/sfx/dlc_claudefm</Item>
+            </filesToEnable>
+            <txdToLoad />
+            <txdToUnload />
+            <residentResources />
+            <unregisterResources />
+            <requiresLoadingScreen value="false" />
+            <loadingScreenContext />
+            <executionConditions />
+            <useCacheLoader value="false" />
+        </Item>
+    </contentChangeSets>
+    <patchFiles />
+    <allowedFolders />
+</CDataFileMgr__ContentsOfDataFileXml>
