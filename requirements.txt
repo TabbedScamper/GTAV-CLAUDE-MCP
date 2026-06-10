@@ -4,3 +4,14 @@
 
 claude-agent-sdk>=0.1.0    # headless host that drives Claude (gtav_host.py)
 mcp[cli]>=1.0,<2           # MCP server (mcp_server/server.py)
+anyio>=4.0,<5              # REQUIRED >=4 by the Agent SDK (open_process user= kwarg). Do NOT let it
+                          # get downgraded - spotdl pins anyio<4 and will break the host. Run spotdl
+                          # from a SEPARATE venv.
+
+# Claude Radio (mcp_server/radio.py) - on-demand music fetch + library
+yt-dlp                     # download songs/adverts from YouTube/SoundCloud
+rapidfuzz                  # fuzzy library search
+mutagen                    # read title/artist/duration tags
+
+# NOTE: spotDL (bulk Spotify-playlist download) is intentionally NOT listed - install it in its own
+# venv (`py -m venv spotdl-venv`) so its anyio<4 pin can't downgrade this environment.
