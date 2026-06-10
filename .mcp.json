@@ -2,7 +2,7 @@
   "mcpServers": {
     "gtav-memory": {
       "type": "stdio",
-      "command": "python",
+      "command": "${GTAV_MCP_PYTHON:-python}",
       "args": ["-m", "mcp_server.server"],
       "cwd": ".",
       "env": {}

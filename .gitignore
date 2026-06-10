@@ -58,3 +58,6 @@ adverts/
 *.user
 Thumbs.db
 .DS_Store
+
+# work-machine session-recovery scratch (machine-specific paths; not for the repo)
+tools/_session-reconstruction-*/

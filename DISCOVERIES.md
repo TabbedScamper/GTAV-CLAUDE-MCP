@@ -164,6 +164,77 @@ Driven from PowerShell (`tools/decode_rel.ps1` pattern). `Unblock-File` the DLLs
 - Bridge: call natives **by name** (`call_native_by_name`) — the bridge resolves the verified hash; a
   wrong raw hash crashes the game. The loader can't return **string** natives (e.g.
   `GET_PLAYER_RADIO_STATION_NAME`) — read those from C# (`Function.Call<string>`).
-- The bridge socket times out while the game is **paused** — do before/after reads, not during a menu.
 - The host (`gtav_host.py`) uses the **Claude subscription via the Agent SDK** (`claude /login`) — no
   API key in the repo.
+
+---
+
+## 8. The pause menu — what freezes, what still works, and how to keep going
+
+### 8.1 Why everything freezes on pause
+The **frontend (ESC / map) pause** freezes the shared **game timer** that drives the rage script
+scheduler. SHV scripts are cooperative fibers resumed off that timer, so when it stops: **ScriptHookV →
+SHVDN (the C# `ClaudeChatUI` panel) → the PyLoaderV bridge tick all stop together.** Consequences:
+- **F10 chat input + the visual panel are dead** (the SHVDN UI script isn't ticking).
+- The bridge's **work queue isn't drained**, so any command that needs the game thread (natives, engine
+  calls) **stalls until unpause**.
+- This is `SET_GAME_PAUSED`-independent and **not** PyLoaderV-specific — it's structural (timer→fiber
+  coupling). The "SHV keeps running while paused" claim online = people running a no-pause mod.
+
+### 8.2 What STILL works while paused — the off-thread socket path
+The bridge **socket server is a background OS thread**, independent of the game tick and the UI, so it
+keeps answering. We route **pure memory/CPU commands** to run directly on that thread (they use ctypes,
+not `gta.*`, which needs game-thread context). **These work fine during a real pause:**
+`read`, `inspect` (by **address**; by-handle degrades), `write`, `revert_last`, `snapshot`, `diff`,
+`scan_pattern`, `find_string`, `find_xrefs`, `resolve_rip_relative`, the `*findings*` tools, and chat
+**polling** (`get_pending_messages`). So you can **read and change values with the world frozen** — just
+drive it from an **external MCP client** (your Claude coding env or the host), since in-game F10 is dead.
+What still waits for unpause: anything calling a **native** or **engine function** (`call_native`,
+`call_function`, `spawn`, `get_context`, content reload, `reload_scripts`).
+> Implementation: `_OFFTHREAD_COMMANDS` + `_run_offthread()` in `bridge.py`; read helpers honor
+> `_is_offthread()` to force the ctypes path. (Also fixed the AOB scanner to be **region-aware** —
+> `_next_readable_chunk()` — so `scan_pattern`/`find_string`/`find_xrefs` read across a module's many
+> memory regions instead of silently skipping chunks that span a region boundary.)
+
+### 8.3 If you want FULL functionality while paused (chat + natives) — the no-pause recipe
+You can keep **everything** ticking during the menu by never letting the pause latch. This is the
+**GTA-Online behavior** and is exactly what GameplayFixesV does — **pure verified natives, no memory
+patch, identical on Legacy + Enhanced.** Run this EVERY FRAME (and it must be running *before* you pause,
+since you can't thaw an already-frozen tick):
+```
+# keep the world (and thus all scripts/UI/bridge) alive while the pause menu is up:
+call_native("SET_PAUSE_MENU_ACTIVE", [false])           # every frame, unless holding a real-pause key
+# when the user taps pause, open the menu WITHOUT pausing:
+if call_native("IS_CONTROL_JUST_PRESSED", [2, 199]) and \
+   call_native("GET_CURRENT_FRONTEND_MENU_VERSION") != joaat("FE_MENU_VERSION_SP_PAUSE"):
+    call_native("ACTIVATE_FRONTEND_MENU", [joaat("FE_MENU_VERSION_SP_PAUSE"), false, -1])  # togglePause=false
+```
+Detect the menu with `IS_PAUSE_MENU_ACTIVE`. **Always include an escape hatch** (a hold-to-*really*-pause
+key) so a true pause is still possible — e.g. before saving.
+
+### 8.4 Want a frozen-LOOKING world while staying live? (documented, NOT implemented)
+A true global pause that keeps scripts ticking is **impossible** (all-or-nothing — the pause flag freezes
+the timer the scripts need). The approximation: layer on top of the no-pause recipe —
+```
+call_native("SET_TIME_SCALE", [0.0001])   # near-freeze; exactly 0 clamps to a tiny minimum, not a true stop
+# and/or pin specific things:  call_native("FREEZE_ENTITY_POSITION", [entity, true])
+```
+→ live bridge/UI/natives on a near-frozen world (good for stable inspection). We deliberately did **not**
+build this — it's here so a future MCP user can add it in one line if they want it.
+
+### 8.5 Caveats for the no-pause path
+- **Preventive only** — it stops the freeze from happening; it can't revive a tick that already stopped.
+- The pause menu's **blur/desat post-FX** stays unless you clear the TC modifier overrides
+  (`CLEAR_ALL_TCMODIFIER_OVERRIDES` / re-add `hud_def_blur`→`default`).
+- With a live world the **map/menu can behave oddly** and audio won't duck like a real pause; input
+  routing (menu vs world) wants in-game tuning.
+- **Don't** call `SET_GAME_PAUSED(true)` from a thread that won't also unpause it — every other thread
+  freezes and you lose control.
+- Ties to the **pause-vs-crash** signal: a *pause* = tick stalled but the socket still answers off-thread
+  reads (not a dead bridge); a *crash* = socket dead. The host can keep reading/recording during a pause
+  instead of treating it as a disconnect.
+
+Source: GameplayFixesV `AllowGameExecutionOnPauseMenu()` (player.cpp) + citizenfx natives; SHVDN #30
+(`Script.Wait` blocks the whole SHV pump). Natives: `SET_PAUSE_MENU_ACTIVE 0xDF47FC56C71569CF`,
+`ACTIVATE_FRONTEND_MENU 0xEF01D36B9C9D0C7B`, `IS_PAUSE_MENU_ACTIVE 0xB0034A223497FFCB`,
+`SET_TIME_SCALE 0x1D408577D440E81E`, `SET_GAME_PAUSED 0x577D1284D6873711`.
