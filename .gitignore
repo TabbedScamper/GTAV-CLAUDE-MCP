@@ -61,3 +61,6 @@ Thumbs.db
 
 # work-machine session-recovery scratch (machine-specific paths; not for the repo)
 tools/_session-reconstruction-*/
+
+# atomic-write / editor temp leftovers
+*.tmp.*
