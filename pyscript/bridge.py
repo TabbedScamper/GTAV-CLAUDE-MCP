@@ -3066,6 +3066,11 @@ def _run_offthread(handler, params):
             _offthread.active = False
 
 # ---- RE toolkit add-ons (Tier A static analysis + par-dump labels + dynamic Tier B) -----------
+# PyLoaderV re-runs this script on F9 but does NOT clear sys.modules, so a plain `import` would keep a
+# stale cached copy of the RE modules. Drop them first so every F9 hot-reloads the toolkit from disk.
+import sys as _sys
+for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch"):
+    _sys.modules.pop(_m, None)
 try:
     import re_tools
     re_tools.bind(globals())
@@ -3201,10 +3206,35 @@ def socket_server_thread():
 # PyLoaderV Script Callbacks
 # =============================================================================
 
+def _reload_re_toolkit():
+    """Re-import the RE modules fresh. PyLoaderV's F9 re-runs on_start() but NOT module-level imports,
+    so calling this from on_start hot-reloads the toolkit (drop cached modules, re-bind, re-register)."""
+    global _OFFTHREAD_COMMANDS
+    import sys as _s
+    for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch"):
+        _s.modules.pop(_m, None)
+    try:
+        import re_tools; re_tools.bind(globals()); COMMANDS.update(re_tools.RE_COMMANDS); _OFFTHREAD_COMMANDS |= re_tools.RE_OFFTHREAD
+    except Exception as e: log_message("error", f"re_tools reload failed: {e}")
+    try:
+        import re_tools_pardump as _p; COMMANDS.update(_p.PAR_COMMANDS)
+    except Exception as e: log_message("error", f"pardump reload failed: {e}")
+    try:
+        import re_tools_dynamic as _d; _d.bind(globals()); COMMANDS.update(_d.RE_DYN_COMMANDS)
+    except Exception as e: log_message("error", f"dynamic reload failed: {e}")
+    try:
+        import re_tools_scan as _sc; _sc.bind(globals()); COMMANDS.update(_sc.SCAN_COMMANDS); _OFFTHREAD_COMMANDS |= _sc.SCAN_OFFTHREAD
+    except Exception as e: log_message("error", f"scan reload failed: {e}")
+    try:
+        import re_tools_patch as _pa; _pa.bind(globals()); COMMANDS.update(_pa.PATCH_COMMANDS); _OFFTHREAD_COMMANDS |= _pa.PATCH_OFFTHREAD
+    except Exception as e: log_message("error", f"patch reload failed: {e}")
+    log_message("info", "RE toolkit (re)loaded")
+
 def on_start():
     """Called when script loads."""
     global _server_running, _server_thread
 
+    _reload_re_toolkit()   # hot-reload the RE toolkit on every F9 (on_start re-runs; module imports don't)
     log_message("info", "GTA V Claude MCP Bridge starting...")
     show_notification("~g~Claude MCP Bridge~w~ starting...")
 

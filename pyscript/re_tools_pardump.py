@@ -160,7 +160,11 @@ def _hash_for(struct):
         return f"0x{int(s,16):X}"
     if s.isdigit():
         return f"0x{int(s):X}"
-    return BY_NAME.get(s.lower())            # class name
+    hx = BY_NAME.get(s.lower())              # resolved class name
+    if hx:
+        return hx
+    hx = f"0x{joaat(s):X}"                    # fallback: JOAAT the name (covers hash-only structs)
+    return hx if hx in INDEX else None
 
 def label(struct, offset):
     """(struct hash|name, offset) -> field name, or None. The inspect-labeling entry point."""
@@ -191,8 +195,28 @@ def handle_enum_decode(p):
     return {"success": True, "enum": p.get("enum"), "value": p.get("value"), "name": n} \
         if n is not None else {"error": "enum/value not found in dump (is a dump loaded?)"}
 
+def handle_par_status(p):
+    return {"success": True, "loaded": len(INDEX) > 0, "structs": len(INDEX),
+            "enums": len(ENUMS), "names": len(NAMES), "autoload": AUTOLOAD}
+
+# ---- auto-load a pre-flattened index dropped next to this module (pyscript/par_index.json) ----
+def _autoload():
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        here = os.getcwd()
+    for cand in (os.path.join(here, "par_index.json"), "par_index.json"):
+        if os.path.exists(cand):
+            try:
+                return load_index(cand)
+            except Exception as e:
+                return {"error": str(e), "path": cand}
+    return None
+
+AUTOLOAD = _autoload()
+
 PAR_COMMANDS = {"par_label": handle_par_label, "par_struct": handle_par_struct,
-                "enum_decode": handle_enum_decode}
+                "enum_decode": handle_enum_decode, "par_status": handle_par_status}
 
 if __name__ == "__main__":
     import sys

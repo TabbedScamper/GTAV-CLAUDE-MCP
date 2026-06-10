@@ -225,10 +225,30 @@ def parse_pdata(base=None):
     exc_dir = opt + 0x70 + 3 * 8                       # DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION]
     dir_rva, dir_size = _u32(exc_dir), _u32(exc_dir + 4)
     if not dir_rva or not dir_size:
-        return None
-    blob = _read_bytes(base + dir_rva, dir_size)
+        # GTA5.exe anti-tamper zeroes DataDirectory[EXCEPTION] AND corrupts the PE-header navigation
+        # (e_lfanew/COFF), so standard section-table walking also fails. But the IMAGE_SECTION_HEADERs
+        # survive intact near the base - scan the header region for the ".pdata" name and read its
+        # VirtualAddress/VirtualSize straight from that section header.
+        hdr = _read_bytes(base, 0x1000)
+        pos = hdr.find(b".pdata\x00\x00") if hdr else -1
+        if pos >= 0:
+            dir_size = struct.unpack_from("<I", hdr, pos + 8)[0]    # VirtualSize
+            dir_rva = struct.unpack_from("<I", hdr, pos + 12)[0]    # VirtualAddress
+        if not dir_rva or not dir_size:
+            return None
+    # The .pdata table is ~1 MB on GTA5 - over the single-read cap and it can span regions, so read it
+    # in chunks (same reason re_scan chunks the module). A single read here silently returns None.
+    blob = bytearray()
+    _off = 0
+    while _off < dir_size:
+        _part = _read_bytes(base + dir_rva + _off, min(0x40000, dir_size - _off))
+        if not _part:
+            break
+        blob += _part
+        _off += len(_part)
     if not blob:
         return None
+    blob = bytes(blob)
     starts, funcs = [], []
     for off in range(0, (len(blob) // 12) * 12, 12):
         begin, end, unw = struct.unpack_from("<III", blob, off)
