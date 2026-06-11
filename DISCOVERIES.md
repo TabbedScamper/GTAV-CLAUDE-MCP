@@ -238,3 +238,43 @@ Source: GameplayFixesV `AllowGameExecutionOnPauseMenu()` (player.cpp) + citizenf
 (`Script.Wait` blocks the whole SHV pump). Natives: `SET_PAUSE_MENU_ACTIVE 0xDF47FC56C71569CF`,
 `ACTIVATE_FRONTEND_MENU 0xEF01D36B9C9D0C7B`, `IS_PAUSE_MENU_ACTIVE 0xB0034A223497FFCB`,
 `SET_TIME_SCALE 0x1D408577D440E81E`, `SET_GAME_PAUSED 0x577D1284D6873711`.
+
+## 9. RE toolkit — in-game validation (build 3788, 2026-06-10)
+
+All 5 RE modules deployed to the game `pyscript\` and validated live. Drive the bridge directly from a
+script: **4-byte little-endian length prefix + JSON body on `127.0.0.1:27015`**; `{"command","params"}` →
+`{...}` (same framing back). Call natives with **`call_native_by_name`** (`call_native` is by-hash and
+wants a `hash` param). F9 hot-reloads the RE modules because `on_start` calls `_reload_re_toolkit()`
+(F9 only re-runs `on_start`, not module-level wiring).
+
+### 9.1 What works
+- **Tier A** (`re_tools`): `list_functions` → 87,381 funcs, `func_bounds`, `re_scan`, `disasm` (capstone).
+  `identify` can't return a class name — GTA5.exe is compiled `/GR-` (RTTI stripped). **`.pdata` fix:** the
+  exception table is ~1.05 MB; a single `read_bytes` whose span crosses a committed-region boundary returns
+  None, so `parse_pdata` reads it in 0x40000 chunks.
+- **par-dump** (`re_tools_pardump`): `par_status`/`par_struct`/`par_label`/`enum_decode` work. BUT
+  alexguirre's GTA5 dump is **PSO/savegame+settings scope only** (every struct carries a `psosig`): you get
+  CGraphicsSettings, CSaveGarages, CRadioStationSaveStructure, control bindings — **not** CHandlingData /
+  CVehicleModelInfo / CWeaponInfo. Closest build to 3788 = **b3442**. Only ~69/2146 struct names + most
+  members are resolved; the rest are JOAAT hashes (the site resolves them client-side from a wordlist).
+  `par_index.json` (flattened via `re_tools_pardump.py`) auto-loads from `pyscript\`.
+- **Tier B** (`re_tools_dynamic`): `read_global` OK; **vehicle pool OK** — `enumerate_entities("vehicle")`
+  returns real CVehicle ptrs (verified: coords (99.1,−1395.9,28.8), vtable in module). `nearby_peds` /
+  `nearby_vehicles` (pool-free, native + ctypes buffer) OK.
+- **value scanner** (`re_tools_scan`): exact region scan, full-heap exact scan (187→28), successive
+  narrowing (`scan_next` 28→3), `scan_undo` all work. Reads are region-aligned so the 1-region read rule is
+  never violated. Gotcha: **player health auto-regenerates**, so exact-match on a live value drifts off
+  between SET and read — pin the value (or widen `eps`) when hunting regenerating stats.
+- **patch tier** (`re_tools_patch`): ALL 7 cmds. `patch_bytes`/`nop`(disasm-length-aware)/`restore_patch`/
+  `restore_all_patches`/`list_patches`/`alloc_cave`(rel32-reachable RWX)/`capture_stack`. A real `.text`
+  write+restore on int3 padding **survived — Arxan tolerated the brief padding write** (game stayed alive).
+
+### 9.2 Gaps / gotchas
+- **ped & object pool AOBs are STALE for 3788** — the `48 8B 05` patterns match the wrong site (resolved
+  struct's +0x00 is a code ptr, not a heap data ptr). `enumerate_entities` now shape-checks and fails
+  honestly instead of returning module-range garbage. Use `nearby_peds`; re-derive the AOBs to fix.
+  Anchor for that: a confirmed **CPed @ `0x23C0C622350`** (vtable `0x7FF73FBA1C60`, health float `+0x280`).
+- **Don't patch `.pdata` "gaps"** between RUNTIME_FUNCTION entries — they can be code without unwind info,
+  not padding (one disassembled as a real prologue: `mov rax, gs:[0x58]`). Scan for `CC`×16 runs for true
+  int3 alignment padding.
+- `SET_ENTITY_HEALTH` takes **4 args** on this build (entity, health, instigator, weaponType).
