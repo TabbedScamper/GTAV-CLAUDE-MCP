@@ -269,11 +269,21 @@ wants a `hash` param). F9 hot-reloads the RE modules because `on_start` calls `_
   `restore_all_patches`/`list_patches`/`alloc_cave`(rel32-reachable RWX)/`capture_stack`. A real `.text`
   write+restore on int3 padding **survived — Arxan tolerated the brief padding write** (game stayed alive).
 
-### 9.2 Gaps / gotchas
-- **ped & object pool AOBs are STALE for 3788** — the `48 8B 05` patterns match the wrong site (resolved
-  struct's +0x00 is a code ptr, not a heap data ptr). `enumerate_entities` now shape-checks and fails
-  honestly instead of returning module-range garbage. Use `nearby_peds`; re-derive the AOBs to fix.
-  Anchor for that: a confirmed **CPed @ `0x23C0C622350`** (vtable `0x7FF73FBA1C60`, health float `+0x280`).
+### 9.2 ped/object enumeration — RE-DERIVED for 3788 (the old `48 8B 05` AOBs were stale)
+The shipped ped/object `48 8B 05` AOBs matched the wrong site on 3788 (resolved struct's +0x00 was a code
+ptr). Re-derived live using the toolkit itself:
+1. `scan_first(u64, exact, <known CPed ptr 0x23C0C622350>)` → 113 locations holding a pointer to the ped.
+2. The pool's `pool_arr` is the **sparse** one (heap ptrs + many nulls) vs dense world-lists (no nulls);
+   found `m_pData=0x23C0002AC60`, capacity 1024.
+3. The heap-only scanner found no struct pointing to it → the holder is in module `.data`. Swept `.data`
+   in region-sized chunks (`scan_first` with `start`/`size`, `writable_only=False`) → struct
+   **`0x7FF7404F0B60`** (RVA `GTA5.exe+0x2420B60`); `find_xrefs` confirmed it (3 `lea` sites).
+4. The init AOB `48 8B D9 48 8D 0D ?? ?? ?? ?? BA 10 00 00 00 E8` matches several **mixed-type** registry
+   arrays (one was {ped:15, object:281, vehicle:1}). Pick the array containing the target type + filter by
+   **entity type** `CEntity+0x28` m_nType = **4 ped, 5 object** (3=vehicle, 1=building). ASLR-safe (no hard
+   addresses). `enumerate_entities("ped"/"object")` now works (ped count matched `nearby_peds`; vehicle pool
+   unaffected — separate working AOB). Caveat: these are entity *registries*, not the canonical type-pure
+   fwPool, so dense-crowd completeness wasn't stress-tested; `with_handles=True` still calls a scanned fn.
 - **Don't patch `.pdata` "gaps"** between RUNTIME_FUNCTION entries — they can be code without unwind info,
   not padding (one disassembled as a real prologue: `mov rax, gs:[0x58]`). Scan for `CC`×16 runs for true
   int3 alignment padding.
