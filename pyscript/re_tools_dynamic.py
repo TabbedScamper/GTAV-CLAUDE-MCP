@@ -33,6 +33,10 @@ def _u32(a):
     b = _P["read_bytes"](a, 4); return struct.unpack("<I", b)[0] if b else None
 def _u64(a):
     b = _P["read_bytes"](a, 8); return struct.unpack("<Q", b)[0] if b else None
+def _u8(a):
+    b = _P["read_bytes"](a, 1); return b[0] if b else None
+def _u16(a):
+    b = _P["read_bytes"](a, 2); return struct.unpack("<H", b)[0] if b else None
 def _resolve(v):
     return (int(v, 16) if v.lower().startswith("0x") else int(v)) if isinstance(v, str) else int(v)
 
@@ -150,23 +154,76 @@ def _iter_generic_pool(pool):
         if flags[i] & 0x80:                         # top bit set = occupied/valid
             yield start + i * item
 
+# ---- Static entity registries (ped/object) -- RE-DERIVED + verified in-game on build 3788 ------
+# Peds & objects live in STATIC entity-registry arrays in .data (m_pData@+0x00 -> pointer array,
+# count@+0x08 u16, capacity@+0x0A u16), reached by an atArray-init `lea`. The AOB matches several
+# such arrays and they are MIXED-TYPE (one was {ped:15, object:281, vehicle:1}), so we (a) pick the
+# array that actually contains the requested entity type and (b) yield only entries whose type matches
+# (CEntity+0x28 m_nType: 4=ped, 5=object). No hard-coded addresses/vtables -> survives ASLR. Entities
+# are POINTERS (separately-allocated CPed/CObject). enumerate("ped") count matched nearby_peds in-game.
+# NOTE: these are registry arrays, not the canonical type-pure fwPool; type-filtering yields the right
+# set for loaded entities (validated vs the native), but dense-crowd completeness isn't stress-tested.
+_STATIC_POOL_AOB = "48 8B D9 48 8D 0D ?? ?? ?? ?? BA 10 00 00 00 E8"   # lea <pool_struct> at match+3
+_ENTITY_TYPE = {"ped": 4, "object": 5}                                 # CEntity+0x28 m_nType
+
+def _resolve_static_entity_pool(want_type):
+    """Find the .data pool struct whose entries are entity type `want_type`. -> (struct, m_pData)."""
+    try:
+        import re_tools
+        matches = re_tools.re_scan(_STATIC_POOL_AOB, limit=32).get("matches") or []
+    except Exception:
+        matches = []
+    for m in matches:
+        S = int(m, 16)
+        disp = _u32(S + 6)                              # rip32 of the `lea r,[rip+disp]` at S+3
+        if disp is None:
+            continue
+        if disp & 0x80000000:
+            disp -= 0x100000000
+        struct_addr = S + 10 + disp                     # (S+3) + 7-byte lea + disp
+        arr = _u64(struct_addr)
+        if not arr or not _looks_heap(arr):
+            continue
+        cap = min(_u16(struct_addr + 0x0A) or 0x4000, 0x4000)
+        checked = 0                                     # these registries are mixed-type, so sample
+        for i in range(cap):                            # several occupied slots for the target type
+            e = _u64(arr + i * 8)
+            if e and _looks_heap(e):
+                if _u8(e + 0x28) == want_type:
+                    return struct_addr, arr             # this array holds entities of our type
+                checked += 1
+                if checked >= 128:                      # sampled enough, none matched -> skip array
+                    break
+    return None, None
+
+def _iter_ptr_pool(arr, want_type, cap):
+    """Pointer pool: yield occupied slots whose entity type matches (skips foreign/garbage entries)."""
+    for i in range(min(cap, 0x4000)):
+        e = _u64(arr + i * 8)
+        if e and _looks_heap(e) and _u8(e + 0x28) == want_type:
+            yield e
+
 def enumerate_entities(kind="ped", limit=128, with_handles=False):
-    """Walk a pool -> list of entity pointers. kind: ped|vehicle|object. UNTESTED - verify AOBs."""
-    if kind not in _POOL_AOB:
+    """Walk an entity pool -> list of pointers. kind: ped|vehicle|object."""
+    if kind == "vehicle":
+        pool = _resolve_pool_global(_POOL_AOB["vehicle"][0])
+        if not pool:
+            return {"error": "could not resolve vehicle pool (AOB miss -> verify for this build)"}
+        head = _u64(pool + 0x00)
+        if not _looks_heap(head):
+            return {"error": f"vehicle pool AOB resolved to a non-pool struct at 0x{pool:X} "
+                             f"(data ptr 0x{(head or 0):X} not heap) -- re-derive the vehicle AOB",
+                    "pool": f"0x{pool:X}"}
+        it, pool_disp = _iter_vehicle_pool(pool), pool
+    elif kind in _ENTITY_TYPE:
+        struct_addr, arr = _resolve_static_entity_pool(_ENTITY_TYPE[kind])
+        if not arr:
+            return {"error": f"could not resolve {kind} pool (no AOB candidate had a type-"
+                             f"{_ENTITY_TYPE[kind]} first entry -> re-derive for this build)"}
+        cap = _u16(struct_addr + 0x0A) or 0x400
+        it, pool_disp = _iter_ptr_pool(arr, _ENTITY_TYPE[kind], cap), struct_addr
+    else:
         return {"error": "kind must be ped|vehicle|object"}
-    pattern, ptype = _POOL_AOB[kind]
-    pool = _resolve_pool_global(pattern)
-    if not pool:
-        return {"error": f"could not resolve {kind} pool (AOB miss -> verify pattern for this build)"}
-    # shape sanity: a real pool's data pointer (+0x00) must be a heap address. If it's module/code,
-    # the AOB matched the wrong site for this build -> fail honestly instead of emitting garbage.
-    head = _u64(pool + 0x00)
-    if not _looks_heap(head):
-        return {"error": f"{kind} pool AOB resolved to a non-pool struct at 0x{pool:X} "
-                         f"(data ptr 0x{(head or 0):X} is in module/code range, not heap) -- "
-                         f"re-derive the {kind} AOB for build 3788",
-                "pool": f"0x{pool:X}", "data_ptr": f"0x{(head or 0):X}"}
-    it = _iter_vehicle_pool(pool) if ptype == "vehicle" else _iter_generic_pool(pool)
     ents, n = [], 0
     for ent in it:
         rec = {"ptr": f"0x{ent:X}"}
@@ -176,8 +233,8 @@ def enumerate_entities(kind="ped", limit=128, with_handles=False):
         n += 1
         if n >= limit:
             break
-    return {"success": True, "kind": kind, "pool": f"0x{pool:X}", "count": len(ents), "entities": ents,
-            "note": "UNTESTED off-game; if empty, re-derive the pool AOB for this build."}
+    return {"success": True, "kind": kind, "pool": f"0x{pool_disp:X}", "count": len(ents),
+            "entities": ents}
 
 # handle<->pointer bridge (Menyoo funcs, found by AOB; call via bridge.handle_call_function)
 _HANDLE_FN = {"ptr2handle": None, "handle2ptr": None}
