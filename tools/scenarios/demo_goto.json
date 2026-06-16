@@ -1,0 +1,19 @@
+{
+  "theme": "demo",
+  "difficulty": 1,
+  "name": "Strawberry Shakedown",
+  "reward": 5000,
+  "native_presentation": true,
+  "objectives": [
+    {
+      "id": "goto",
+      "kind": "goto",
+      "text": "Get to the ~y~meeting point.",
+      "coords": [60.0, -1410.0, 30.5],
+      "blip_colour": 5,
+      "native_marker": "checkpoint",
+      "native": ["ADD_BLIP_FOR_COORD", "SET_BLIP_ROUTE", "CREATE_CHECKPOINT", "IS_ENTITY_AT_COORD"],
+      "complete": { "type": "reach", "radius": 14.0 }
+    }
+  ]
+}

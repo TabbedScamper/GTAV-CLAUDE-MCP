@@ -113,7 +113,8 @@ def _exact_mask_py(vals, vt, value, eps):
     return [i for i, v in enumerate(vals) if v == value]
 
 def scan_first(vtype, scan_type="exact", value=None, lo=None, hi=None, eps=0.01,
-               start=None, size=None, max_results=200000, writable_only=True):
+               start=None, size=None, max_results=200000, writable_only=True,
+               private_only=True, max_total=512 * 1024 * 1024):
     """First scan. scan_type: exact|unknown|bigger|smaller|between. Returns {count,mode}."""
     vt = vtype.lower()
     if vt not in _VT:
@@ -127,7 +128,7 @@ def scan_first(vtype, scan_type="exact", value=None, lo=None, hi=None, eps=0.01,
         regions = [(int(start), _read(int(start), int(size)))]
         regions = [(b, d) for b, d in regions if d]
     else:
-        regions = _iter_scan_regions(writable_only=writable_only)
+        regions = _iter_scan_regions(writable_only=writable_only, private_only=private_only, max_total=max_total)
 
     if scan_type == "unknown":
         snaps, total = [], 0
@@ -261,7 +262,9 @@ def handle_scan_first(p):
                       eps=float(p.get("eps", 0.01)),
                       start=p.get("start"), size=p.get("size"),
                       max_results=int(p.get("max_results", 200000)),
-                      writable_only=bool(p.get("writable_only", True)))
+                      writable_only=bool(p.get("writable_only", True)),
+                      private_only=bool(p.get("private_only", True)),
+                      max_total=int(p.get("max_total", 512 * 1024 * 1024)))
 def handle_scan_next(p):
     return scan_next(p.get("scan_type", "unchanged"), value=p.get("value"),
                      eps=float(p.get("eps", 0.01)), max_results=int(p.get("max_results", 200000)))

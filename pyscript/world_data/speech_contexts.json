@@ -1,0 +1,20 @@
+{
+  "$note": "event -> protagonist speech CONTEXTS (the game plays the real recorded line in the ped's voice via PLAY_PED_AMBIENT_SPEECH_NATIVE). Contexts marked confirmed were grep'd from R*'s decompiled scripts; others are well-known generic ped contexts the protagonist voices also speak (verify in-game, swap any that don't fire). Voices: MICHAEL / FRANKLIN / TREVOR (+ _ACTION/_NORMAL).",
+  "$expand": "Pull the full context list from the game's audio config (dialogue .dat / awc names) or community speech-name lists; add mission-specific heist banter via the scripted-conversation system.",
+  "voices": ["MICHAEL", "FRANKLIN", "TREVOR"],
+  "events": {
+    "combat_start":   ["GENERIC_WAR_CRY", "SHOUT_THREATEN_PED", "GENERIC_INSULT_HIGH", "CHALLENGE_THREATEN"],
+    "new_threat":     ["GENERIC_SHOCKED_HIGH", "GENERIC_CURSE_MED", "GENERIC_WAR_CRY"],
+    "took_damage":    ["GENERIC_CURSE_HIGH", "GENERIC_SHOCKED_HIGH", "GENERIC_FRUSTRATED_HIGH"],
+    "low_health":     ["GENERIC_FRIGHTENED_HIGH", "GENERIC_CURSE_HIGH"],
+    "kill":           ["GENERIC_WAR_CRY", "KILLED_ENEMY", "GENERIC_INSULT_MED"],
+    "wanted_gained":  ["GENERIC_CURSE_MED", "POLICE_FLEE", "GENERIC_FRIGHTENED_MED"],
+    "wanted_cleared": ["GENERIC_PLEASED", "GENERIC_THANKS", "JEERING"],
+    "enter_vehicle":  ["GENERIC_HOWS_IT_GOING"],
+    "objective_done": ["GENERIC_PLEASED", "GENERIC_THANKS"],
+    "mission_start":  ["GENERIC_HI", "GENERIC_HOWS_IT_GOING"],
+    "mission_passed": ["GENERIC_PLEASED", "CHEER", "GENERIC_THANKS"],
+    "mission_failed": ["GENERIC_CURSE_HIGH", "GENERIC_FRUSTRATED_HIGH"],
+    "timer_warning":  ["GENERIC_CURSE_MED", "GENERIC_FRIGHTENED_MED"]
+  }
+}

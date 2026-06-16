@@ -1,0 +1,90 @@
+{
+  "$generated": true,
+  "theme": "heist",
+  "difficulty": 1,
+  "name": "Fleeca Bank (Legion) Heist",
+  "reward": 228334,
+  "objectives": [
+    {
+      "id": "goto",
+      "kind": "goto",
+      "text": "Go to ~y~Fleeca Bank (Legion).",
+      "coords": [
+        147.0,
+        -1044.0,
+        29.0
+      ],
+      "blip_colour": 66,
+      "native_marker": "checkpoint",
+      "native": [
+        "ADD_BLIP_FOR_COORD",
+        "SET_BLIP_ROUTE",
+        "CREATE_CHECKPOINT",
+        "IS_ENTITY_AT_COORD"
+      ],
+      "complete": {
+        "type": "reach",
+        "radius": 15.0
+      }
+    },
+    {
+      "id": "breach",
+      "kind": "goto",
+      "text": "Breach the ~g~objective.",
+      "coords": [
+        147.7,
+        -1049.3,
+        29.0
+      ],
+      "blip_colour": 2,
+      "native_marker": "checkpoint",
+      "native": [
+        "CREATE_CHECKPOINT",
+        "GET_DISTANCE_BETWEEN_COORDS"
+      ],
+      "complete": {
+        "type": "reach",
+        "radius": 3.0
+      }
+    },
+    {
+      "id": "grab",
+      "kind": "wait",
+      "text": "Grab the ~g~loot.",
+      "blip_colour": 5,
+      "native": [
+        "PLAY_SOUND_FRONTEND"
+      ],
+      "complete": {
+        "type": "timer",
+        "seconds": 10.0
+      }
+    },
+    {
+      "id": "escape",
+      "kind": "escape",
+      "text": "~y~Lose the cops and leave the area.",
+      "coords": [
+        147.0,
+        -1044.0,
+        29.0
+      ],
+      "blip_colour": 66,
+      "native_marker": "blip",
+      "native": [
+        "GET_PLAYER_WANTED_LEVEL",
+        "GET_DISTANCE_BETWEEN_COORDS"
+      ],
+      "complete": {
+        "type": "left_area_and_clean",
+        "radius": 150.0
+      }
+    }
+  ],
+  "native_presentation": true,
+  "timer_seconds": 330,
+  "on_timeout": {
+    "wanted": 3,
+    "subtitle": "~r~Out of time - cops called!"
+  }
+}

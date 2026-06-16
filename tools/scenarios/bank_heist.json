@@ -1,0 +1,40 @@
+{
+  "$note": "A declarative bank-heist scenario for mission_runner.py (the game master). Modeled on M8T's framework (PATTERNS/12): ordered objectives, a routed blip per stage, completion by reach/timer/left-area-and-clean, a global timer whose expiry calls the cops. Coords are approximate (Fleeca/Legion area) — verify/adjust in-game or via landmarks. Claude can generate variants of this on request ('give me a bank heist scenario').",
+  "name": "Fleeca Bank Heist",
+  "reward": 185000,
+  "timer_seconds": 300,
+  "on_timeout": { "wanted": 4, "subtitle": "~r~You took too long - the alarm tripped. Cops incoming!" },
+  "objectives": [
+    {
+      "id": "travel",
+      "kind": "goto",
+      "text": "Go to the ~y~Fleeca Bank.",
+      "coords": [147.0, -1044.0, 29.0],
+      "blip_colour": 66,
+      "complete": { "type": "reach", "radius": 18.0 }
+    },
+    {
+      "id": "vault",
+      "kind": "goto",
+      "text": "Get to the ~g~vault.",
+      "coords": [149.0, -1046.0, 29.0],
+      "blip_colour": 2,
+      "complete": { "type": "reach", "radius": 3.0 }
+    },
+    {
+      "id": "grab",
+      "kind": "wait",
+      "text": "Grab the ~g~cash.",
+      "blip_colour": 5,
+      "complete": { "type": "timer", "seconds": 10.0 }
+    },
+    {
+      "id": "escape",
+      "kind": "escape",
+      "text": "~y~Lose the cops and leave the area with the cash.",
+      "coords": [195.0, -934.0, 30.0],
+      "blip_colour": 66,
+      "complete": { "type": "left_area_and_clean", "radius": 150.0 }
+    }
+  ]
+}

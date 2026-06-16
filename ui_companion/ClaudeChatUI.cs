@@ -22,6 +22,7 @@ namespace ClaudeChatUI
         private readonly string msgDir;
         private readonly string userMsgFile;
         private readonly string chatHistoryFile;
+        private readonly string objectiveFile;   // bottom-center mission objective text (bridge writes it)
 
         private bool terminalVisible = false;   // F11 toggles
         private int terminalScrollOffset = 0;    // 0 = bottom (newest); negative = scrolled up
@@ -52,11 +53,20 @@ namespace ClaudeChatUI
         private ScaledText title, footerText, empty;
         private ScaledText[] lineTexts;
 
+        // ---- Bottom-center mission objective (drawn every frame, independent of the chat panel) ----
+        // Rendered from C#/LemonUI because PyLoaderV's Python native-invoke can't drive GTA's multi-call
+        // text-command builder (BEGIN/ADD/END) — only single-call draws + notifications work from Python.
+        // SHVDN gives the text builder a proper script-thread context, exactly like the M8T heist mods.
+        private ScaledText objectiveText;
+        private string objectiveCache = "";
+        private int objLoadTimer = 0;
+
         public Main()
         {
             msgDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GTAV-Claude-MCP");
             userMsgFile = Path.Combine(msgDir, "user_message.txt");
             chatHistoryFile = Path.Combine(msgDir, "chat_history.txt");
+            objectiveFile = Path.Combine(msgDir, "objective.txt");
             Directory.CreateDirectory(msgDir);
 
             BuildUI();
@@ -88,6 +98,10 @@ namespace ClaudeChatUI
             { Color = Color.FromArgb(255, 165, 165, 195), Outline = false };
             empty = new ScaledText(PointF.Empty, "Waiting for terminal...", 0.34f, Font.ChaletLondon)
             { Color = Color.Gray, Alignment = Alignment.Center };
+
+            // Mission objective: centered, bottom of screen, drop-shadow + outline (real-mission look).
+            objectiveText = new ScaledText(PointF.Empty, "", 0.5f, Font.ChaletLondon)
+            { Color = Color.White, Alignment = Alignment.Center, Outline = true, Shadow = true };
 
             lineTexts = new ScaledText[VISIBLE_LINES];
             for (int i = 0; i < VISIBLE_LINES; i++)
@@ -167,6 +181,28 @@ namespace ClaudeChatUI
             }
             if (terminalVisible)
                 DrawTerminal();
+
+            // Objective text draws EVERY frame regardless of the chat panel (it's the mission HUD).
+            if (++objLoadTimer > 8) { objLoadTimer = 0; LoadObjective(); }
+            DrawObjective();
+        }
+
+        private void LoadObjective()
+        {
+            try
+            {
+                objectiveCache = File.Exists(objectiveFile) ? File.ReadAllText(objectiveFile).Trim() : "";
+            }
+            catch { }
+        }
+
+        private void DrawObjective()
+        {
+            if (string.IsNullOrEmpty(objectiveCache)) return;
+            float vw = 1080f * GTA.UI.Screen.AspectRatio;
+            objectiveText.Text = objectiveCache;
+            objectiveText.Position = new PointF(vw / 2f, 1080f * 0.86f);  // centered, near the bottom
+            objectiveText.Draw();
         }
 
         private void LoadTerminal()

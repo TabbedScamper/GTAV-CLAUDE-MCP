@@ -1,0 +1,1701 @@
+{
+ "count": 168,
+ "recipes": [
+  {
+   "title": "Marshal native args as a flat ulong[] stack \u2014 int/bool zero-extend, float BIT-CAST",
+   "category": "native-marshalling",
+   "problem": "Convert int/bool/float/string args into the 64-bit slots ScriptHookV's `nativePush64` expects.",
+   "method": "Every arg \u2192 one `ulong`. bool\u2192`1/0`; int\u2192cast through `uint` first (so a negative handle doesn't sign-fill the upper 32 bits); float\u2192**reinterpret the bytes, do NOT numeric-convert**: `*(uint*)&f`; IntPtr\u2192`(ulong)ptr`; string\u2192pin UTF-8, push pointer. Call cycle: `nativeInit(hash)` \u2192 loop `nativePush64(arg)` \u2192 `nativeCall()` returns `ulong*` to the result. ScriptHookV mangled exports: `?nativeInit@@YAX_K@Z`, `?nativePush64@@YAX_K@Z`, `?nativeCall@@YAPEA_KXZ`.",
+   "gotcha": "Float MUST be bit-cast \u2014 `(ulong)3.5f` truncates to 3. Int cast through `uint` before widening or negative handles corrupt the slot.",
+   "source": "shvdn-api/source/core/NativeFunc.cs",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "marshal-native-args-as-a-flat-ulong-stack-int-bool-zero-exte"
+  },
+  {
+   "title": "Read a Vector3 return as 8-byte-strided floats (the \"FixVectors\" issue)",
+   "category": "native-marshalling",
+   "problem": "Vector3-returning natives (GET_ENTITY_COORDS/ROTATION/VELOCITY) write each component on its own 16-byte register slot; reading 3 contiguous floats gives garbage Y/Z.",
+   "method": "Result buffer is `ulong*`. Read float at **+0x00 (X), +0x08 (Y), +0x10 (Z)** \u2014 stride 8, total 24 bytes. (SHVDN overlays `[StructLayout(Explicit, Size=0x18)]` NativeVector3.)",
+   "gotcha": "Stride is 8, not 4. Only the low dword of each slot is valid; padding between is junk. **Our bridge already requests `return_type=vector3` for these \u2014 this card explains why.**",
+   "source": "shvdn-api/source/scripting_v2/GTA.Native/Native.cs",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "read-a-vector3-return-as-8-byte-strided-floats-the-fixvector"
+  },
+  {
+   "title": "Output (pointer) args: pre-allocate a 24-byte buffer, pass its address, read back",
+   "category": "native-marshalling",
+   "problem": "Natives taking `int*`/`Vector3*` out-params need a stable slot the engine writes into.",
+   "method": "Allocate **24 bytes** (widest case = Vector3 at stride 8), pass its address as the arg, then reinterpret after the call (`*(int*)buf`, or the strided Vector3 overlay). Free when done.",
+   "gotcha": "24 (not 4/12) because Vector3 out uses the 0x00/0x08/0x10 strided layout. Own/pin the buffer for the whole call.",
+   "source": "shvdn-api/source/scripting_v2/GTA.Native/Native.cs",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "output-pointer-args-pre-allocate-a-24-byte-buffer-pass-its-a"
+  },
+  {
+   "title": "Convert an entity handle \u2192 game address via the script-GUID resolver",
+   "category": "memory",
+   "problem": "Turn a script handle (what natives return) into the raw `CEntity*` for direct offset reads.",
+   "method": "Find the resolver once: pattern `85 ED 74 0F 8B CD E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 74 2E`, resolve the RIP `call`: `func = *(int*)(addr+7) + addr + 11`. `GetEntityAddress(handle) = func(handle)`. Works for ped/vehicle/object/pickup.",
+   "gotcha": "Don't hand-roll pool math for entities \u2014 this engine fn does the fwScriptGuid lookup correctly for all types. `+7/+11` is the standard `E8 rel32` resolve (call sits 4 bytes into the match).",
+   "source": "shvdn-api/source/core/NativeMemory.cs (GetEntityAddress)",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "convert-an-entity-handle-game-address-via-the-script-guid-re"
+  },
+  {
+   "title": "Resolve pool pointers from `mov reg,[rip+disp]` \u2014 the +3/+7 idiom",
+   "category": "pattern-scan",
+   "problem": "Get live pool pointers (ped/object/vehicle/pickup/checkpoint/blip).",
+   "method": "Each pool loads via `48 8B 05 xx xx xx xx` (`mov rax,[rip+disp32]`), disp masked `????`. Resolve: `poolPtr = *(int*)(addr+3) + addr + 7`. Patterns: ped `48 8B 05 ?? ?? ?? ?? 41 0F BF C8 0F BF 40 10`; object `48 8B 05 ?? ?? ?? ?? 8B 78 10 85 FF`; vehicle `48 8B 05 ?? ?? ?? ?? F3 0F 59 F6 48 8B 08`; pickup `4C 8B 05 ?? ?? ?? ?? 40 8A F2 8B E9`.",
+   "gotcha": "`+3` skips the 3-byte opcode, `+7` is next-instruction. Result is a pointer-to-pointer \u2014 deref once more to reach the `fwBasePool`. (Corroborates STUDIES.md \u00a72 / fivem-offset-dumper.)",
+   "source": "shvdn-api/source/core/NativeMemory.cs",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "resolve-pool-pointers-from-mov-reg-rip-disp-the-3-7-idiom"
+  },
+  {
+   "title": "Three RIP-resolve idioms \u2014 pick the delta by instruction type",
+   "category": "pattern-scan",
+   "problem": "Not every reference is +3/+7; `lea`, `call`, mid-pattern operands, and embedded offsets differ.",
+   "method": "(1) `mov/lea r,[rip+d]`, 3-byte opcode \u2192 `*(int*)(a+3)+a+7`. (2) `call rel32` (`E8`) \u2192 `*(int*)(a+1)+a+5`; if the call is N bytes into the match \u2192 `*(int*)(a+N)+a+N+4`. (3) Operand offset into the match \u2192 index to it, e.g. `*(int*)(a+0x25)+a+0x29`. **Plain struct field offsets** are read as a literal dword/byte at a fixed delta with **no RIP add**: `vehicleClassOffset = *(uint*)(addr+0x10)`, `ArmorOffset = *(int*)(addr+11)`.",
+   "gotcha": "Rule = *displacement + address-of-byte-after-the-full-instruction*. Mis-counting instruction length shifts every read. Embedded literal offsets (field offsets, vfunc indices) are absolute \u2014 do NOT add the address to those.",
+   "source": "shvdn-api/source/core/NativeMemory.cs (static ctor)",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "three-rip-resolve-idioms-pick-the-delta-by-instruction-type"
+  },
+  {
+   "title": "fwBasePool slot math \u2014 index = handle>>8, counter = handle & 0xFF",
+   "category": "memory",
+   "problem": "Convert handle\u2194slot address without the engine (for building/interior/checkpoint pools with no GUID resolver).",
+   "method": "`fwBasePool`: PoolAddress@0x00, Flags(byte[])@0x08, Capacity@0x10, SlotSize@0x14, FirstEmpty@0x18, used&flags@0x20 (`& 0x3FFFFFFF`). Handle = `(index<<8) | counter`. `GetAddress(i) = Mask(i) & (PoolAddress + i*SlotSize)`. Validate: `flags[index] & 0x7F == handle & 0xFF`. Reverse: `i=(addr-PoolAddress)/SlotSize; handle=(i<<8)|(flags[i]&0x7F)`.",
+   "gotcha": "`Mask(i)` is branchless validity: high bit `0x80` = occupied; invalid slot \u2192 address 0. Counter is low 7 bits only. \"Full\" when `Capacity - Used <= 256` (ScriptHookV bumps capacity \u22653072).",
+   "source": "shvdn-api/source/core/Structs/FwBasePool.cs",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "fwbasepool-slot-math-index-handle-8-counter-handle-0xff"
+  },
+  {
+   "title": "Enumerate entities by minting GUIDs from the fwScriptGuid pool",
+   "category": "memory",
+   "problem": "Get handles for all live peds/vehicles/objects, mirroring natives.",
+   "method": "Deref the fwScriptGuid pool; walk target pool slots `0..Capacity`; skip `!IsValid(i)`; `GetAddress(i)`; distance/model-filter; mint with engine `createGuid(address)` (pattern `48 F7 F9 49 8B 48 08 48 63 D0 C1 E0 08 0F B6 1C 11 03 D8`, then `func = addr - 0x68`). Vehicles use a `RageSysMemPoolAllocator`, not a plain fwBasePool.",
+   "gotcha": "Check `fwScriptGuidPool->IsFull()` and **fail loud** before each mint \u2014 overflow silently loses entities. Fresh GUIDs each frame; don't reuse across frames. (This is the canonical version of our `enumerate_entities`.)",
+   "source": "shvdn-api/source/core/NativeMemory.cs (FwScriptGuidPoolTask)",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "enumerate-entities-by-minting-guids-from-the-fwscriptguid-po"
+  },
+  {
+   "title": "Walk the model-hash table to classify a model hash",
+   "category": "memory",
+   "problem": "Given a model hash, find `CModelInfo*` + read type (ped/vehicle/weapon) / vehicle class without a native.",
+   "method": "Off one pattern region (`66 81 F9 ?? ?? 74 10 4D 85 C0`, back up `*(int*)(a-0x21)+a-0x1D`): get `modelHashTable`, `modelHashEntries`, `modelNum1..4`. Lookup: `bucket = hash % entries`; walk `HashNode*` list (Next/Hash/Data); validity `(*(int*)(modelNum2+4*(data>>5)) & (1<<(data&0x1F)))` and `data<modelNum1`; `modelInfo = *(ulong*)(modelNum4 + modelNum3*data)`. Type = `*(byte*)(modelInfo+157) & 0x1F`; vehicle class = `*(byte*)(modelInfo+vehicleClassOffset) & 0x1F`.",
+   "gotcha": "It's `base + stride*index` (modelNum4 + modelNum3*data), not a flat pointer array. **Skip known stub hashes that crash on load** (astron2 0xA71D0D4F, cyclone2 0x170341C2, etc.) \u2014 same fail-closed spirit as our native allowlist.",
+   "source": "shvdn-api/source/core/NativeMemory.cs (GetModelInfo)",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "walk-the-model-hash-table-to-classify-a-model-hash"
+  },
+  {
+   "title": "Pattern-scan best practice \u2014 BMH, cache once, fail loud",
+   "category": "pattern-scan",
+   "problem": "Scan the module efficiently and detect breakage on game updates.",
+   "method": "Range = `MainModule.BaseAddress` for `ModuleMemorySize`. Boyer\u2013Moore\u2013Horspool with a 256-entry skip table; `'?'` bytes stored as `-1` (always match). Run ALL resolves once in a static ctor, cache results. Branch patterns on build version where layouts changed (e.g. fwScriptGuid pool differs before/after b3788).",
+   "gotcha": "On no-match, return null AND **log the pattern** \u2014 a silently-null pointer becomes a crash later; a null here is your first signal a pattern needs re-derivation after a patch. Naive scan is the fallback for very short patterns.",
+   "source": "shvdn-api/source/core/MemScanner.cs",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "pattern-scan-best-practice-bmh-cache-once-fail-loud"
+  },
+  {
+   "title": "Read/patch script globals via ScriptHookV getGlobalPtr",
+   "category": "memory",
+   "problem": "Read/write a script global (mission/economy/state) by ID.",
+   "method": "Import `?getGlobalPtr@@YAPEA_KH@Z` \u2192 `IntPtr getGlobalPtr(int index)` returns a pointer to the global's 64-bit slot (or Zero). Deref to read; write through to patch. (SHVDN uses this to flip the \"enable all DLC vehicles\" global.)",
+   "gotcha": "Global IDs differ between builds \u2014 never hardcode across versions; gate by game version. Globals are 8-byte slots even for int/float. (This is exactly our `read_global`/`write_global` mechanism.)",
+   "source": "shvdn-api/source/core/NativeMemory.cs (GetGlobalPtr)",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "read-patch-script-globals-via-scripthookv-getglobalptr"
+  },
+  {
+   "title": "Parse the SP savegame header (260-byte block, magic 00 00 00 01)",
+   "category": "save-format",
+   "problem": "Validate an SP save and extract its title.",
+   "method": "Read first **260** bytes; valid only if first 4 = `00 00 00 01`. Split the header on byte `0x01`; element [1] is the title payload. R* photo/meta (RagePhoto) family = 4-byte LE magic, fixed header, then `JPEG`/`JSON`/`TITL`/`DESC` 4-char markers each followed by a LE uint32 length + payload.",
+   "gotcha": "gta5view reads only the **header/title** \u2014 money/stats/vehicles live in the **encrypted save body it never touches**. So there's no clean public path to edit SP money via the save file \u2192 use the in-game stat/global path instead (STUDIES.md \u00a75: `Game.Player.Money`). For metadata use the Snapmatic/RagePhoto offsets (`seek(offset+264)`, verify the 4-char marker).",
+   "source": "gta5view-tool/SavegameData.cpp, RagePhoto.cpp",
+   "file": "01-native-invocation-and-memory.md",
+   "id": "parse-the-sp-savegame-header-260-byte-block-magic-00-00-00-0"
+  },
+  {
+   "title": "Resolve CVehicle base address from a handle, every tick (don't cache)",
+   "category": "memory",
+   "problem": "Turn a vehicle handle into the `CVehicle*` that all offsets are relative to.",
+   "method": "AOB-scan `GetAddressOfEntity` once: `83 F9 FF 74 31 4C 8B 0D ?? ?? ?? ?? 44 8B C1 49 8B 41 08` \u2014 the match IS the function entry; cast to `fn(int)->ptr` and call with the handle. Then every getter is `*(T*)(base + offset)`.",
+   "gotcha": "The pattern resolves a *function you call*, not a data offset \u2014 don't read a displacement out of it. Entities get re-pooled/moved, so **re-resolve from the handle each tick; never cache the pointer**. Null-check base before deref. (SHVDN's GUID resolver in file 01 is the C# equivalent.)",
+   "source": "manualtransmission-ikt/Gears/Memory/NativeMemory.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "resolve-cvehicle-base-address-from-a-handle-every-tick-don-t"
+  },
+  {
+   "title": "Read a field offset out of the matched instruction's disp32",
+   "category": "memory",
+   "problem": "Get a field's numeric offset (gears/RPM/fuel) without hardcoding, so it survives patches.",
+   "method": "AOB-match an instruction that touches the field, then `offset = *(int*)(addr + N)` where N points at the disp32 inside the opcode. E.g. RPM `76 03 0F 28 F0 F3 44 0F 10 93` \u2192 `*(int*)(addr+10)`; next-gear `48 8D 8F ?? ?? ?? ?? 4C 8B C3` \u2192 `*(int*)(addr+3)`; turbo (b1604+) `F3 0F 10 9F D4 08 00 00` \u2192 `*(int*)(addr+4)`.",
+   "gotcha": "N is per-pattern \u2014 it must land on the `??` disp bytes, not the opcode start. **Sibling fields are derived by arithmetic off ONE anchor**, not separate scans: `currentGear=nextGear+2`, `topGear=nextGear+6`, `gearRatios=nextGear+8`; `clutch=rpm+0xC`, `throttle=rpm+0x10`; `oil=fuel+4`. If the anchor scan fails, the whole derived group is silently wrong \u2014 guard on the anchor being nonzero.",
+   "source": "manualtransmission-ikt/Gears/Memory/VehicleExtensions.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "read-a-field-offset-out-of-the-matched-instruction-s-disp32"
+  },
+  {
+   "title": "Branch the AOB on game build before scanning version-sensitive fields",
+   "category": "memory",
+   "problem": "Turbo, drive-force, handbrake, traction-vector offsets moved between builds; one pattern won't cover all.",
+   "method": "Call `SetVersion(shvVersion)` first (also bumps gear count 8\u219211 at \u2265b1604). In `Init()`, gate the pattern by version: e.g. handbrake `8A C2 24 01 C0 E0 04 08 81` (\u2192 `*(int*)(addr+19)`) on b2060+ vs `44 88 A3 ?? ?? ?? ?? 45 8A F4` (\u2192 `*(int*)(addr+3)`) below; arenaBoost on b1604+ has no pattern \u2014 hardcoded `turboOffset + 0x30`.",
+   "gotcha": "SHV's reported version can disagree with the actual EXE \u2014 ikt cross-checks `getGameVersion()` against `getExeInfo()` and prefers the EXE-derived version when SHV reports lower. SetVersion MUST precede Init() (gear count + branch decisions read the version at scan time).",
+   "source": "manualtransmission-ikt/Gears/Memory/VehicleExtensions.cpp, Gears/main.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "branch-the-aob-on-game-build-before-scanning-version-sensiti"
+  },
+  {
+   "title": "Walk vehicle \u2192 wheel-array \u2192 individual wheel pointers",
+   "category": "vehicle",
+   "problem": "Read/write per-wheel data (rotation, steering angle, brake/power, traction, health, radius).",
+   "method": "`wheelsPtr = *(uint64*)(base + wheelsPtrOffset)`, `numWheels = *(int*)(base + numWheelsOffset)` \u2014 both from ONE scan `3B B7 48 0B 00 00 7D 0D` \u2192 `numWheelsOffset=*(int*)(addr+2)`, `wheelsPtrOffset=that-8`. Each wheel = `*(uint64*)(wheelsPtr + 0x08*i)`. Per-wheel sub-offsets: tyre radius `0x110`, rim `0x114`, tyre width `0x118`, world velocity `0xB0`, traction vector `0xC0`, wheel-id `0x108`, handling-ptr `0x120`.",
+   "gotcha": "`wheelsPtr` is a pointer to an ARRAY OF POINTERS \u2014 double deref, stride 0x08 (not wheel-struct size). Steering/brake/power anchored to one pattern by \u00b1arithmetic. Rotation speed + traction-vector lengths are stored **negated** (getters flip sign). Bounds check is off-by-one (`index > GetNumWheels` allows ==) \u2014 validate yourself.",
+   "source": "manualtransmission-ikt/Gears/Memory/VehicleExtensions.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "walk-vehicle-wheel-array-individual-wheel-pointers"
+  },
+  {
+   "title": "Reach CHandlingData through the pattern-scanned handling offset",
+   "category": "vehicle",
+   "problem": "Read/write handling values (drive bias, drive force, steering lock, suspension, camber/toe).",
+   "method": "Scan `3C 03 0F 85 ?? ?? ?? ?? 48 8B 41 20 48 8B 88` \u2192 `handlingOffset = *(int*)(addr+0x16)`. Then `handlingPtr = *(uint64*)(base + handlingOffset)`. Field map (constants, from `HandlingInfo.h`): `fInitialDriveForce@0x60` (power), `fDriveMaxFlatVel@0x64` (top speed), `fTractionCurveMax@0x88` (grip), `fSuspensionRaise@0xD0` (ride height), `fBrakeForce@0x6C`, `fSteeringLock@0x80`. **Camber/toe are in a SUB-struct:** `CCarHandlingData` via `m_subHandlingData@0x158` \u2192 `fToeFront@0x14`, `fCamberFront@0x1C`, `fCamberRear@0x20`, `fCastor@0x24`.",
+   "gotcha": "The scanned `handlingOffset` self-heals across builds \u2014 **this resolves the +0x918 vs +0x960 ambiguity in STUDIES.md \u00a75: let the live scan decide.** Two \"drive force\" concepts: live `driveForceOffset` on the vehicle (upgrade-affected, mutable) vs static `fInitialDriveForce@0x60` in handling. `CHandlingData` is **model-shared** \u2014 editing changes every instance of that model; clone for per-car.",
+   "source": "manualtransmission-ikt/Gears/Memory/VehicleExtensions.cpp, handling-editor-ikt/RTHandlingEditor/Memory/HandlingInfo.h",
+   "file": "02-vehicle-dynamics.md",
+   "id": "reach-chandlingdata-through-the-pattern-scanned-handling-off"
+  },
+  {
+   "title": "Reach CVehicleModelInfo for model flags + steering-wheel angle",
+   "category": "vehicle",
+   "problem": "Read class-level model data (vehicle flag bitsets, max steering-wheel display angle).",
+   "method": "`pModelInfo = *(uint64*)(base + 0x020)`. Flags: scan `48 85 C0 74 3C 8B 80 ?? ?? ?? ?? C1 E8 0F` \u2192 `flagsOffset = *(int*)(addr+7)`, read 6 consecutive uint32 at `pModelInfo + flagsOffset + 4*i`. Max steering-wheel angle = `*(float*)(pModelInfo + 0x54C)`.",
+   "gotcha": "`0x020` and `0x54C` are hardcoded (version-fragile). The flags scan returns an offset into *modelinfo*, so do the modelinfo indirection first \u2014 reading `base + flagsOffset` points into the wrong struct.",
+   "source": "manualtransmission-ikt/Gears/Memory/VehicleExtensions.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "reach-cvehiclemodelinfo-for-model-flags-steering-wheel-angle"
+  },
+  {
+   "title": "Re-assert gear/RPM/clutch/throttle writes EVERY tick",
+   "category": "vehicle",
+   "problem": "The drivetrain sim overwrites your memory writes each frame; a one-shot write is lost.",
+   "method": "In the per-frame loop, write fresh each tick: to lock a gear set BOTH `SetGearCurr` AND `SetGearNext` to the same value (gear is a uint16 pair); `SetCurrentRPM(clamp(rpm,0,1))`; `SetClutch`; set BOTH `SetThrottle` AND `SetThrottleP`. Values are normalized floats [0,1] (throttleP can go negative).",
+   "gotcha": "`SetThrottle` reportedly affects engine *sound* only; actual drive is `SetThrottleP`/wheel power \u2014 set both. There is no set-and-forget. (This is the memory-side proof of our CLAUDE.md \"value reverting = re-assert, not re-guess\" rule.)",
+   "source": "manualtransmission-ikt/Gears/script.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "re-assert-gear-rpm-clutch-throttle-writes-every-tick"
+  },
+  {
+   "title": "Patch the game's WRITER instruction when re-asserting isn't enough",
+   "category": "memory",
+   "problem": "Some fields fail even with per-tick writes because a specific game instruction actively decays/resets them (throttle decay, brake decay, auto-shift, ABS, steering assist).",
+   "method": "AOB-scan the writer instruction and NOP it (`0x90` fill) or jump over it; save original bytes for restore. Gate the patch set by version. Examples: brake decay `EB 05 F3 0F 10 40 78`, ABS `0B 45 04 89 86 ?? 02 00 00`, steering control `F3 0F 11 8B FC 08 00 00`.",
+   "gotcha": "Apply the patch BEFORE/with the write each tick or the un-NOPed instruction wins the race. Patches are **process-global** (all vehicles) \u2014 enable sparingly, restore when done (esp. input-hijacking ones). Patch bytes are version-specific and tracked separately from read offsets. Use a small retry budget (scans transiently fail). **Our `re_tools_patch` (nop/patch_bytes/restore) already does this \u2014 reversible via registry + WAL.**",
+   "source": "manualtransmission-ikt/Gears/Memory/MemoryPatcher.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "patch-the-game-s-writer-instruction-when-re-asserting-isn-t-"
+  },
+  {
+   "title": "Wheel fitment / stance \u2014 natives only, no memory (VStancer)",
+   "category": "vehicle",
+   "problem": "Adjust track width + camber (the ExtendedLSC stance feature) update-proof.",
+   "method": "`n = GET_VEHICLE_NUMBER_OF_WHEELS(veh)`; for each wheel i: `SET_VEHICLE_WHEEL_X_OFFSET(veh, i, +tw if i%2==0 else -tw)` (track) and `SET_VEHICLE_WHEEL_Y_ROTATION(veh, i, +cam if i%2==0 else -cam)` (camber). Front = indices `0..frontCount-1`, rear = the rest. Capture stock via the `GET_` variants before editing (no reset native). Re-assert each tick; persist to your own JSON.",
+   "gotcha": "**Mirror L/R by index parity** or the car slides sideways instead of widening. Front/rear are separate index ranges. No memory, no offsets \u2192 nothing to break on a patch. **Best path for ExtendedLSC** (STUDIES.md \u00a77.2). Seen in 1 mod, but corroborated by the natives' documented purpose.",
+   "source": "vstancer/VStancer.Client/Scripts/WheelScript.cs (full writeup in ../FINDINGS-wheels-and-handling.md)",
+   "file": "02-vehicle-dynamics.md",
+   "id": "wheel-fitment-stance-natives-only-no-memory-vstancer"
+  },
+  {
+   "title": "Derive on-ground / blinker / fuel from non-obvious encodings",
+   "category": "vehicle",
+   "problem": "Some \"states\" aren't stored as the obvious flag.",
+   "method": "**On-ground per wheel** = suspension compression `!= 0.0` (scan `45 0F 57 C9 F3 0F 11 83 60 01 00 00 F3 0F 5C` \u2192 `*(int*)(addr+8)`); a wheel in the air reads exactly 0.0; use last-contact coords at wheel `+0x40` (stable). **Blinker phase** = `((*(uint32*)(base+indicatorTimingOffset) + gameTime) >> 9) & 1` \u2014 a function of stored counter + live clock, changes every frame. **Oil** = `fuel+4` (not separately scanned).",
+   "gotcha": "None of these read as a plain bool/value \u2014 they're derived. A wheel's \"next-probable\" contact coord (`+0x60`) flutters to (0,0,0) when contact is lost; use `+0x40`.",
+   "source": "manualtransmission-ikt/Gears/Memory/VehicleExtensions.cpp",
+   "file": "02-vehicle-dynamics.md",
+   "id": "derive-on-ground-blinker-fuel-from-non-obvious-encodings"
+  },
+  {
+   "title": "Normalize coordinates to a 1080-tall virtual canvas (X divisor uses aspect ratio!)",
+   "category": "ui",
+   "problem": "Draw at fixed positions that look identical at any resolution. Draw natives take 0.0\u20131.0 coords.",
+   "method": "Design in a space 1080px tall, `1080*aspectRatio` wide. `aspect = GET_ASPECT_RATIO(false)`. Then `relX = pixelX / (1080.0*aspect)`, `relY = pixelY / 1080.0`.",
+   "gotcha": "**X divisor is `1080*aspect`, Y is bare `1080`.** Using 1080 for X squashes everything on non-1:1. Use `GET_ASPECT_RATIO`, not screenW/screenH, when letterboxing/eyefinity is in play (they differ). LemonUI uses this; NativeUI hand-rolls `screenW/screenH`.",
+   "source": "lemonui/LemonUI/Tools/Extensions.cs, nativeui-guad/NativeUI/Screen.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "normalize-coordinates-to-a-1080-tall-virtual-canvas-x-diviso"
+  },
+  {
+   "title": "DRAW_RECT/DRAW_SPRITE are CENTER-anchored; text is TOP-LEFT",
+   "category": "ui",
+   "problem": "A box/sprite appears shifted down-right by half its size.",
+   "method": "`DRAW_RECT(x,y,w,h,r,g,b,a)` and `DRAW_SPRITE(dict,name,x,y,w,h,heading,r,g,b,a)` treat x,y as the CENTER. From a top-left origin: `x = px + w*0.5; y = py + h*0.5`. Colors 0\u2013255. `DRAW_SCALEFORM_MOVIE` is ALSO center-anchored.",
+   "gotcha": "Rect/sprite/scaleform = center; text (`END_TEXT_COMMAND_DISPLAY_TEXT`) = top-left. Apply the +half-size only to the former.",
+   "source": "nativeui-guad/.../Sprite.cs, lemonui/.../ScaledRectangle.cs, ragenativeui/.../Scaleform.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "draw-rect-draw-sprite-are-center-anchored-text-is-top-left"
+  },
+  {
+   "title": "Draw text via the BEGIN\u2192set-every-property\u2192ADD\u2192END sandwich, every frame",
+   "category": "ui",
+   "problem": "Drawing a string is a stateful command buffer rebuilt each frame, not one call.",
+   "method": "Set style FIRST: `SET_TEXT_FONT`, `SET_TEXT_SCALE(0.0, scale)`, `SET_TEXT_COLOUR(r,g,b,a)`, `SET_TEXT_JUSTIFICATION`/`_CENTRE`/`_RIGHT_JUSTIFY`, optional `SET_TEXT_WRAP(start,end)`, `SET_TEXT_DROP_SHADOW`/`_OUTLINE`. Then: `BEGIN_TEXT_COMMAND_DISPLAY_TEXT(label)` \u2192 `ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(text)` \u2192 `END_TEXT_COMMAND_DISPLAY_TEXT(x,y)`.",
+   "gotcha": "Set font/scale/colour/justification on EVERY frame before END \u2014 state is consumed and reset, so an unset property inherits garbage from the last drawer. Use label `\"CELL_EMAIL_BCON\"` (not `\"STRING\"`) when pushing multiple substrings \u2014 it concatenates.",
+   "source": "lemonui/.../ScaledText.cs, nativeui-guad/.../UIResText.cs, ragenativeui/Source/TextCommands.cs",
+   "corroboration": "seen in 4 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "draw-text-via-the-begin-set-every-property-add-end-sandwich-"
+  },
+  {
+   "title": "Split strings into \u2264~98 UTF-8 BYTE chunks (not chars)",
+   "category": "ui",
+   "problem": "Long text truncates/corrupts; the substring native has a hard per-call BYTE limit.",
+   "method": "Before `ADD_TEXT_COMPONENT_SUBSTRING_*`, slice so each pushed chunk is under the cap (LemonUI 90, NativeUI 99 bytes), measured by `UTF8.GetByteCount`. Push chunks in order under one BEGIN.",
+   "gotcha": "Limit is BYTES \u2014 accented/CJK hits it far sooner than length suggests. Slice on the UTF-8 byte boundary or you split a codepoint \u2192 mojibake. Don't split inside a `~...~` color/icon token.",
+   "source": "lemonui/.../ScaledText.cs, nativeui-guad/.../UIResText.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "split-strings-into-98-utf-8-byte-chunks-not-chars"
+  },
+  {
+   "title": "Request a streamed texture dict, then poll HAS_\u2026_LOADED before DRAW_SPRITE \u2014 every frame",
+   "category": "streaming",
+   "problem": "DRAW_SPRITE draws nothing because the texture dict isn't resident.",
+   "method": "On the draw path each frame: `if (!HAS_STREAMED_TEXTURE_DICT_LOADED(dict)) REQUEST_STREAMED_TEXTURE_DICT(dict, true);` then `DRAW_SPRITE(dict, name, ...)`.",
+   "gotcha": "REQUEST is async \u2014 may not be ready the same frame, so request+check live on the draw path, not once at init. The sprite simply won't appear for the first frame(s); that's expected, not an error.",
+   "source": "lemonui/.../ScaledTexture.cs, nativeui-guad/.../Sprite.cs, ragenativeui/.../BarTimerBar.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "request-a-streamed-texture-dict-then-poll-has-loaded-before-"
+  },
+  {
+   "title": "Measure text width / line count with a parallel BEGIN\u2026END pair",
+   "category": "ui",
+   "problem": "Need a string's on-screen width (centering/layout) or wrapped line count before drawing.",
+   "method": "Width: `BEGIN_TEXT_COMMAND_GET_SCREEN_WIDTH_OF_DISPLAY_TEXT(\"CELL_EMAIL_BCON\")` \u2192 push substrings + set font/scale \u2192 `END_TEXT_COMMAND_GET_SCREEN_WIDTH_OF_DISPLAY_TEXT(true)` returns 0\u20131 relative width; \u00d7`1080*aspect` for pixels. Line count: `BEGIN_\u2026_GET_NUMBER_OF_LINES_FOR_STRING` \u2026 `END_\u2026(x,y)`. Char height: `GET_RENDERED_CHARACTER_HEIGHT(scale, font)` \u00d71080.",
+   "gotcha": "Measurement uses the SAME set-font/scale ritual on its own BEGIN/END pair \u2014 set them before END or you measure the wrong font. Returned width is relative; scale it back up yourself.",
+   "source": "lemonui/.../ScaledText.cs, nativeui-guad/.../Screen.cs",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "measure-text-width-line-count-with-a-parallel-begin-end-pair"
+  },
+  {
+   "title": "Honor the safe-zone with the SCRIPT_GFX_ALIGN envelope",
+   "category": "ui",
+   "problem": "Edge-anchored UI gets clipped by overscan / safe-zone, especially corners.",
+   "method": "`SET_SCRIPT_GFX_ALIGN(hAlign, vAlign)` (chars 'L'/'R'/'C'/'T'/'B' as ints) \u2192 `SET_SCRIPT_GFX_ALIGN_PARAMS(x,y,w,h)` (offset + bounding box of what you draw) \u2192 your draws \u2192 `RESET_SCRIPT_GFX_ALIGN()`. Read back aligned coords with `GET_SCRIPT_GFX_ALIGN_POSITION(relX,relY,&outX,&outY)`.",
+   "gotcha": "For any align other than left/top you MUST pass real w/h in `_PARAMS` or the start position is wrong. **Always RESET afterward** or every later draw this frame inherits the offset. Timer-bar HUD also `HIDE_HUD_COMPONENT_THIS_FRAME(6,7,8,9)` each frame to avoid overlap.",
+   "source": "lemonui/.../SafeZone.cs, ragenativeui/.../TimerBarPool.cs",
+   "corroboration": "seen in 2 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "honor-the-safe-zone-with-the-script-gfx-align-envelope"
+  },
+  {
+   "title": "Disable game controls each frame; re-enable only what you need",
+   "category": "input",
+   "problem": "While your UI is up, the player still shoots/moves behind it.",
+   "method": "Every frame: `DISABLE_ALL_CONTROL_ACTIONS(group)` then `ENABLE_CONTROL_ACTION(0, control, true)` for the few you keep (look, frontend nav). Group `2` = frontend/menu, `0` = gameplay.",
+   "gotcha": "Lasts ONE frame \u2014 re-issue every tick or controls snap back. Re-enable LookLeftRight/LookUpDown if you still want camera. Re-enable gamepad Aim/Attack/Look conditionally on `IS_USING_KEYBOARD_AND_MOUSE(2)`.",
+   "source": "lemonui/.../Controls.cs, nativeui-guad/.../Controls.cs, menubase-ikt/menucontrols.cpp",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "disable-game-controls-each-frame-re-enable-only-what-you-nee"
+  },
+  {
+   "title": "After disabling controls, READ them with the IS_DISABLED_CONTROL_* family",
+   "category": "input",
+   "problem": "After `DISABLE_ALL_CONTROL_ACTIONS`, `IS_CONTROL_JUST_PRESSED` stops firing for your menu keys.",
+   "method": "Use the disabled variants: `IS_DISABLED_CONTROL_JUST_PRESSED(0, control)`, `IS_DISABLED_CONTROL_PRESSED(0, control)`. Analog/cursor: `GET_CONTROL_NORMAL(0, control)` \u2192 -1..1 (still works on disabled controls; how you read the mouse cursor via CursorX/Y).",
+   "gotcha": "Plain `IS_CONTROL_*` returns false for a control you disabled this frame \u2014 so navigation dies the instant you `DISABLE_ALL`. Always pair disable with the `IS_DISABLED_*` readers.",
+   "source": "lemonui/.../Controls.cs, menubase-ikt/menucontrols.cpp, ragenativeui/Source/Natives.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "after-disabling-controls-read-them-with-the-is-disabled-cont"
+  },
+  {
+   "title": "Drive any scaleform method: BEGIN \u2192 ADD_PARAM (string = 3-native sandwich) \u2192 END",
+   "category": "scaleform",
+   "problem": "Call a scaleform method with mixed int/float/bool/string/texture args in the right order.",
+   "method": "`BEGIN_SCALEFORM_MOVIE_METHOD(handle, method)` \u2192 per arg in order: int `SCALEFORM_MOVIE_METHOD_ADD_PARAM_INT`, float `\u2026_FLOAT`, bool `\u2026_BOOL`, texture `\u2026_TEXTURE_NAME_STRING`; **string = `BEGIN_TEXT_COMMAND_SCALEFORM_STRING(\"STRING\")` \u2192 `ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(s)` \u2192 `END_TEXT_COMMAND_SCALEFORM_STRING()`** \u2192 finally `END_SCALEFORM_MOVIE_METHOD()`.",
+   "gotcha": "A string param is NOT a single native \u2014 the 3-native text sandwich is mandatory; any other way yields an empty/garbage param. Args must be pushed left-to-right in the method's expected order.",
+   "source": "menubase-ikt/Scaleform.h, ragenativeui/.../Scaleform.cs, lemonui/.../BaseScaleform.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "drive-any-scaleform-method-begin-add-param-string-3-native-s"
+  },
+  {
+   "title": "Instructional-button bar \u2014 full rebuild order + rebuild-on-input-change",
+   "category": "scaleform",
+   "problem": "The bottom-right button-hint bar that auto-swaps KB/controller glyphs.",
+   "method": "`REQUEST_SCALEFORM_MOVIE(\"instructional_buttons\")`, wait `HAS_SCALEFORM_MOVIE_LOADED`. Per rebuild (via the method-call sequence above): `CLEAR_ALL` \u2192 `TOGGLE_MOUSE_BUTTONS(bool)` \u2192 `SET_MAX_WIDTH(float)` \u2192 per slot `SET_DATA_SLOT(int slot, string buttonId, string label)` \u2192 `SET_BACKGROUND_COLOUR(r,g,b,a)` \u2192 `DRAW_INSTRUCTIONAL_BUTTONS(0)`. Then `DRAW_SCALEFORM_MOVIE_FULLSCREEN(handle,255,255,255,255,0)` every frame. Get a control's glyph token with `GET_CONTROL_INSTRUCTIONAL_BUTTON(2, control, true)`.",
+   "gotcha": "Rebuild only on content change OR `HAS_INPUT_JUST_CHANGED(2)` \u2014 else glyphs won't swap when the player switches KB\u2194pad. **Don't cache the glyph token** (differs per input scheme); store the control id, re-query each rebuild. ButtonId encoding: `\"t_\"/\"T_\"/\"w_\"` by caption length, `\"b_<id>\"` raw symbol (b_44 spinner), group join with `%` in REVERSE order, empty slot = `\"t_\"`.",
+   "source": "ragenativeui/.../InstructionalButtons.cs, lemonui/.../InstructionalButtons.cs",
+   "corroboration": "seen in 3 mods",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "instructional-button-bar-full-rebuild-order-rebuild-on-input"
+  },
+  {
+   "title": "Read a scaleform method's RETURN value asynchronously",
+   "category": "scaleform",
+   "problem": "Methods like `GET_NUMBER_OF_ROWS` return a value that isn't ready the same frame.",
+   "method": "`BEGIN_SCALEFORM_MOVIE_METHOD(...,\"GET_NUMBER_OF_ROWS\")` \u2192 `END_SCALEFORM_MOVIE_METHOD_RETURN_VALUE()` gives an id; later poll `IS_SCALEFORM_MOVIE_METHOD_RETURN_VALUE_READY(id)` then `GET_SCALEFORM_MOVIE_METHOD_RETURN_VALUE_INT(id)`.",
+   "gotcha": "Async \u2014 not ready the same frame; reuse the previous value while polling (re-issue if not ready within ~2 frames). Fallback: `BUSYSPINNER_IS_ON() ? 1 : 0`.",
+   "source": "ragenativeui/.../InstructionalButtons.cs",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "read-a-scaleform-method-s-return-value-asynchronously"
+  },
+  {
+   "title": "Big-message / shard scaleform (mission passed, rank up, shard banners)",
+   "category": "scaleform",
+   "problem": "The large center-screen banners.",
+   "method": "`REQUEST_SCALEFORM_MOVIE(\"MP_BIG_MESSAGE_FREEMODE\")`. Methods (via the call sequence): `SHOW_MISSION_PASSED_MESSAGE(msg, sub, 100, true, 0, true)`; `SHOW_SHARD_CENTERED_MP_MESSAGE(title, desc, textColor, bgColor)`; `SHOW_BIG_MP_MESSAGE`; `SHOW_WEAPON_PURCHASED`. Draw each frame; dismiss with method `TRANSITION_OUT`; dispose `SET_SCALEFORM_MOVIE_AS_NO_LONGER_NEEDED(&handle)`.",
+   "gotcha": "Must be drawn every frame to persist. `SHOW_CENTERED_MP_MESSAGE_LARGE` needs an explicit `TRANSITION_IN` follow-up; most others animate in automatically.",
+   "source": "ragenativeui/.../BigMessage.cs",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "big-message-shard-scaleform-mission-passed-rank-up-shard-ban"
+  },
+  {
+   "title": "Post a feed notification (top-left ticker)",
+   "category": "notification",
+   "problem": "Standard GTA notification.",
+   "method": "`BEGIN_TEXT_COMMAND_THEFEED_POST(\"STRING\")` \u2192 `ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(text)` (split if long) \u2192 `END_TEXT_COMMAND_THEFEED_POST_TICKER(blink, showInBrief)`.",
+   "gotcha": "Same text sandwich as DISPLAY_TEXT but the THEFEED BEGIN/END pair \u2014 using the wrong END (e.g. DISPLAY_TEXT's) posts nothing. The 98-byte split rule applies here too.",
+   "source": "ragenativeui/Source/TextCommands.cs",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "post-a-feed-notification-top-left-ticker"
+  },
+  {
+   "title": "Frontend nav sounds: GET_SOUND_ID \u2192 PLAY_SOUND_FRONTEND \u2192 RELEASE_SOUND_ID",
+   "category": "audio",
+   "problem": "Authentic menu blips without leaking sound handles.",
+   "method": "`id = GET_SOUND_ID()` \u2192 `PLAY_SOUND_FRONTEND(id, name, ref, true)` \u2192 `RELEASE_SOUND_ID(id)`. `ref = \"HUD_FRONTEND_DEFAULT_SOUNDSET\"`; names: `NAV_UP_DOWN`, `NAV_LEFT_RIGHT`, `SELECT`, `BACK`, `ERROR`.",
+   "gotcha": "GET_SOUND_ID allocates from a small pool \u2014 for one-shots RELEASE immediately or you exhaust the pool and sounds stop. Keep the id only if you intend to `STOP_SOUND(id)` later. (Relevant to our Claude FM work.)",
+   "source": "lemonui/.../Sound.cs, nativeui-guad/.../UIMenu.cs",
+   "file": "03-ui-hud-scaleform.md",
+   "id": "frontend-nav-sounds-get-sound-id-play-sound-frontend-release"
+  },
+  {
+   "title": "Stream a model: request, poll, THEN create",
+   "category": "streaming",
+   "problem": "Any CREATE_* returns 0/null if the model isn't resident.",
+   "method": "`REQUEST_MODEL(hash)` \u2192 loop `WAIT(0)` while `!HAS_MODEL_LOADED(hash)` with a ~3000\u20137500ms timeout \u2192 then CREATE. Guard first with `IS_MODEL_VALID(hash) && IS_MODEL_IN_CDIMAGE(hash)` (vehicles also `IS_MODEL_A_VEHICLE`). Props needing physics: also `REQUEST_COLLISION_FOR_MODEL` / `HAS_COLLISION_FOR_MODEL_LOADED`.",
+   "gotcha": "Async \u2014 never create on the request frame. Poll with `WAIT(0)` (yield a frame) each iteration, not a busy-spin, or the streamer never advances. Bound with a timeout and bail \u2014 some hashes never load. (Our `spawn_vehicle` already does request-then-poll non-blocking; this confirms the discipline.)",
+   "source": "menyoo/.../Scripting/Model.cpp",
+   "corroboration": "seen in 2 mods",
+   "file": "04-spawning-world-scenes.md",
+   "id": "stream-a-model-request-poll-then-create"
+  },
+  {
+   "title": "Release the model AFTER spawning, not before; reference-count it",
+   "category": "streaming",
+   "problem": "Free the model template without orphaning the entity.",
+   "method": "After CREATE succeeds: `SET_MODEL_AS_NO_LONGER_NEEDED(hash)`. The entity persists; only the template is released. If many entities share a hash, only release on the last (MapEditor keeps a `UsedModels` list; releases when count hits 0).",
+   "gotcha": "Release per-spawn AFTER creation. Menyoo deliberately leaves bulk-unload commented out at scene-load so fresh props don't pop before they settle.",
+   "source": "mapeditor-guad/PropStreamer.cs, menyoo/.../Scripting/Model.cpp",
+   "corroboration": "seen in 2 mods",
+   "file": "04-spawning-world-scenes.md",
+   "id": "release-the-model-after-spawning-not-before-reference-count-"
+  },
+  {
+   "title": "Pick the right CREATE_* + arg order; then re-set position/rotation",
+   "category": "spawn",
+   "problem": "Correct native + args per entity type.",
+   "method": "",
+   "gotcha": "Set position+rotation AGAIN right after creation \u2014 create natives can land slightly off (Menyoo creates, then `Position_set` then `Rotation_set`). Choose CREATE_OBJECT vs _NO_OFFSET deliberately (bounding-box offset).",
+   "source": "menyoo/.../Scripting/World.cpp, mapeditor-guad/PropStreamer.cs",
+   "corroboration": "seen in 2 mods",
+   "file": "04-spawning-world-scenes.md",
+   "id": "pick-the-right-create-arg-order-then-re-set-position-rotatio"
+  },
+  {
+   "title": "Make a spawn persist (mission entity) and freeze statics",
+   "category": "persistence",
+   "problem": "Stop the engine despawning placed entities when the player leaves; pin static decor.",
+   "method": "`SET_ENTITY_AS_MISSION_ENTITY(handle, false, true)` (keep-alive form). Static scenery: also `FREEZE_ENTITY_POSITION(handle, true)`. Track every handle in your own list/DB.",
+   "gotcha": "The engine garbage-collects entities NOT marked as mission entities \u2014 unmarked spawns vanish on streaming-out. A non-frozen static prop drifts/falls. The `(h, false, true)` arg form is keep-alive; `(h, false, \u2026)` then delete is the removal form (next card).",
+   "source": "menyoo/.../Scripting/GTAentity.cpp, mapeditor-guad/PropStreamer.cs",
+   "corroboration": "seen in 2 mods",
+   "file": "04-spawning-world-scenes.md",
+   "id": "make-a-spawn-persist-mission-entity-and-freeze-statics"
+  },
+  {
+   "title": "Delete cleanly: take control \u2192 un-mission \u2192 type-specific delete (by pointer)",
+   "category": "persistence",
+   "problem": "Reliably remove a (possibly persistent) entity without leaking it.",
+   "method": "RequestControl (network) \u2192 remove blip \u2192 `SET_ENTITY_AS_MISSION_ENTITY(handle, false)` to demote \u2192 `DELETE_OBJECT(&handle)` / `DELETE_VEHICLE(&handle)` / `DELETE_PED(&handle)` (fallback `DELETE_ENTITY(&handle)`). Detach children first.",
+   "gotcha": "You CANNOT delete a still-flagged mission entity \u2014 un-mission first or the delete silently no-ops. DELETE_* take a POINTER and zero the handle. Menyoo optionally teleports the entity to a junk coord (32.27, 7683.52, 0.57) before delete to force it out of the active area.",
+   "source": "menyoo/.../Scripting/GTAentity.cpp, menyoo/.../Spooner/EntityManagement.cpp",
+   "corroboration": "seen in 2 mods",
+   "file": "04-spawning-world-scenes.md",
+   "id": "delete-cleanly-take-control-un-mission-type-specific-delete-"
+  },
+  {
+   "title": "Attach entity to entity \u2014 exact arg order (child, parent)",
+   "category": "attachment",
+   "problem": "Stick a prop/ped onto another entity or bone with a relative offset+rotation.",
+   "method": "`ATTACH_ENTITY_TO_ENTITY(entity, toEntity, boneIndex, offX,offY,offZ, rotX,rotY,rotZ, p9=false, useSoftPinning=false, collision, isPed=false, vertexIndex=2, fixedRot=true, p15=0)`. Detach: `DETACH_ENTITY(entity, applyVelocity=1, noCollisionUntilClear=1)`.",
+   "gotcha": "First arg is the CHILD, second the PARENT (doer, getter). `fixedRot=true` holds the local rotation rather than swinging. `boneIndex=0` attaches to the entity ROOT, not a bone. Guard `child != parent`.",
+   "source": "menyoo/.../Scripting/GTAentity.cpp",
+   "file": "04-spawning-world-scenes.md",
+   "id": "attach-entity-to-entity-exact-arg-order-child-parent"
+  },
+  {
+   "title": "Resolve bone INDICES at attach time \u2014 never hardcode/serialize them",
+   "category": "attachment",
+   "problem": "Attach to a specific bone (hand, chassis), which needs a runtime index, not a name.",
+   "method": "`GET_ENTITY_BONE_INDEX_BY_NAME(entity, boneName)` \u2192 pass as the `boneIndex` arg. Bone world pos: `GET_WORLD_POSITION_OF_ENTITY_BONE(entity, boneIndex)`.",
+   "gotcha": "Bone indices are per-entity AND per-model \u2014 resolve against the target instance at attach time; never hardcode or serialize the raw index across models. Returns -1/root if the bone doesn't exist \u2014 validate.",
+   "source": "menyoo/.../Scripting/GTAentity.cpp",
+   "file": "04-spawning-world-scenes.md",
+   "id": "resolve-bone-indices-at-attach-time-never-hardcode-serialize"
+  },
+  {
+   "title": "Snap an entity to the ground (probe from above + add half-height)",
+   "category": "world",
+   "problem": "Place on terrain when you only have X/Y or an approximate Z.",
+   "method": "`GET_GROUND_Z_FOR_3D_COORD(x, y, probeZ=1000.0, &outGroundZ, 0, 0)` then set Z = `groundZ + model.halfHeight`. Robust fallback: raycast straight down (and up) and use `hit.z + halfHeight`.",
+   "gotcha": "Probes DOWNWARD from probeZ \u2014 start ABOVE the surface (1000.0 standard) or it returns 0/garbage. The ground tile must be STREAMED IN, else 0.0 \u2014 raycast is the more robust fallback. Add the model half-height or the pivot sits at ground level and the mesh clips through.",
+   "source": "menyoo/.../Scripting/World.cpp, menyoo/.../GTAentity.cpp",
+   "file": "04-spawning-world-scenes.md",
+   "id": "snap-an-entity-to-the-ground-probe-from-above-add-half-heigh"
+  },
+  {
+   "title": "Heading vs full quaternion \u2014 store both, apply after position",
+   "category": "world",
+   "problem": "Preserve exact orientation across save/load when Euler loses precision / gimbal-flips.",
+   "method": "Simple: pass `heading` (Z yaw) to create, or `entity.Rotation = (pitch, roll, yaw)`. Exact: `GET_ENTITY_QUATERNION(h,&x,&y,&z,&w)` / `SET_ENTITY_QUATERNION(h,x,y,z,w)`. MapEditor stores both and re-applies the quaternion after position.",
+   "gotcha": "Apply rotation/quaternion AFTER the entity exists and AFTER position (MapEditor: Rotation \u2192 quaternion \u2192 Position last). Euler order here is (Pitch=X, Roll=Y, Yaw=Z). Prefer the quaternion when present.",
+   "source": "mapeditor-guad/Quaternion.cs, mapeditor-guad/PropStreamer.cs",
+   "file": "04-spawning-world-scenes.md",
+   "id": "heading-vs-full-quaternion-store-both-apply-after-position"
+  },
+  {
+   "title": "The Menyoo Spooner XML scene schema (the shareable format)",
+   "category": "scene-format",
+   "problem": "Serialize a whole scene so it round-trips and interops with thousands of community maps.",
+   "method": "Root `<SpoonerPlacements>` with `<ReferenceCoords><X/><Y/><Z/></>`, optional `<Note>`; one `<Placement>` per entity:",
+   "gotcha": "`<AttachedTo>` stores the save-time handle (meaningless after reload \u2014 see next card). `IsCollisionProof` is serialized INVERTED (`!IsCollisionEnabled`). MapEditor writes ModelHash as `\"0x\"+hash.ToString(\"x8\")`.",
+   "source": "menyoo/.../Spooner/FileManagement.cpp, mapeditor-guad/MenyooCompatibility.cs",
+   "corroboration": "seen in 2 mods",
+   "file": "04-spawning-world-scenes.md",
+   "id": "the-menyoo-spooner-xml-scene-schema-the-shareable-format"
+  },
+  {
+   "title": "Re-link attachments on load via a two-pass InitialHandle remap",
+   "category": "scene-format",
+   "problem": "Restore parent/child attachments when every entity gets a NEW handle on load.",
+   "method": "**Pass 1:** spawn EVERY placement, storing `{newEntity, initHandle, attachedToHandle}`; then `WAIT(~1000ms)` to settle. **Pass 2:** for each attached entity, resolve parent \u2014 if `attachedTo==myPed`\u2192player, `==myVehicle`\u2192player's car, else find the entry whose `initHandle==attachedToHandle` and attach to its NEW handle.",
+   "gotcha": "MUST spawn all entities before wiring any attachment (a child can reference a parent listed later). Link key is the stored InitialHandle, not positions. The `WAIT` between spawn and attach matters \u2014 without it attachments snap to wrong transforms.",
+   "source": "menyoo/.../Spooner/FileManagement.cpp",
+   "file": "04-spawning-world-scenes.md",
+   "id": "re-link-attachments-on-load-via-a-two-pass-initialhandle-rem"
+  },
+  {
+   "title": "Respect the entity cap and YIELD during bulk spawning",
+   "category": "spawn",
+   "problem": "Spawn many entities (loading a big scene) without crashing/stalling the streamer.",
+   "method": "Cap total (MapEditor `MAX_OBJECTS=2048`). During bulk create, yield periodically: `if (count % 249 == 0) WAIT(100)`. Retry vehicle creation (it can transiently return null even with the model loaded). Keep parallel handle lists for cleanup/save.",
+   "gotcha": "The engine chokes spawning hundreds in one frame \u2014 interleave `WAIT` every couple hundred. Track static vs dynamic separately so you know which to freeze. (Directly relevant to building heist/chase scenes via the bridge.)",
+   "source": "mapeditor-guad/PropStreamer.cs",
+   "file": "04-spawning-world-scenes.md",
+   "id": "respect-the-entity-cap-and-yield-during-bulk-spawning"
+  },
+  {
+   "title": "Load anim dict then play a clip (the core flow)",
+   "category": "animation",
+   "problem": "Play any (dict, clip) on a ped reliably \u2014 the dict must be streamed before TASK_PLAY_ANIM or the ped does nothing.",
+   "method": "1) `REQUEST_ANIM_DICT(dict)`. 2) Poll `HAS_ANIM_DICT_LOADED(dict)` in a yield loop until true (~1-2s timeout). 3) `TASK_PLAY_ANIM(ped, dict, clip, blendIn, blendOut, duration, flags, startPhase, phaseControlled, ikFlags, allowOverride)` \u2014 SHVDN uses `8.0, -8.0, -1, flags, 0.0, false, 0, 0`; rpemotes `5.0, 5.0, dur|-1, flags, 0, false,false,false`. 4) `REMOVE_ANIM_DICT(dict)` is safe right after (the running task keeps its own ref).",
+   "gotcha": "`duration = -1` = play full clip once unless the Loop flag is set. `startPhase` is 0.0-1.0 (fraction), NOT ms. Blend-delta sign is ignored by the game (+8/-8 and +5/+5 both work).",
+   "source": "shvdn-api/source/scripting_v3/GTA/Entities/Peds/Task/TaskInvoker.cs; rpemotes/client/Utils.lua",
+   "file": "05-animation.md",
+   "id": "load-anim-dict-then-play-a-clip-the-core-flow"
+  },
+  {
+   "title": "eScriptedAnimFlags bit values and common combos",
+   "category": "animation",
+   "problem": "Build the `flags` int for the behavior you want (loop / upper-body / hold-pose / secondary).",
+   "method": "Sum bits: `1` Loop, `2` StayInEndFrame(hold), `4` RepositionWhenFinished, `8` NotInterruptable, `16` UpperBodyOnly, `32` Secondary(runs alongside movement), `64` ReorientWhenFinished, `128` AbortOnPedMovement, `256` Additive, `512` TurnOffCollision, `1024` OverridePhysics, `2048` IgnoreGravity, `1048576` HideWeapon. Common: looped idle `1`; hold pose `1+2=3`; looping upper-body gesture while walking `1+16+32=49`; rpemotes \"moving\" emote `51` (1+2+16+32 = loop upper body without freezing the legs).",
+   "gotcha": "rpemotes' own `AnimFlag` enum (LOOP=1, MOVING=51, STUCK=50) is a convenience set, not the raw flags \u2014 `51` is the go-to for \"gesture while still walking.\"",
+   "source": "shvdn-api/.../Peds/AnimationFlags.cs; rpemotes/types.lua, client/Emote.lua",
+   "file": "05-animation.md",
+   "id": "escriptedanimflags-bit-values-and-common-combos"
+  },
+  {
+   "title": "Positioned playback with TASK_PLAY_ANIM_ADVANCED",
+   "category": "animation",
+   "problem": "Play a clip at an exact world position+orientation (snap a ped to a mark, or sync several at one spot).",
+   "method": "Load the dict yourself first, then `TASK_PLAY_ANIM_ADVANCED(ped, dict, clip, x,y,z, rotX,rotY,rotZ, blendIn, blendOut, timeToPlay, flags, startPhase, rotationOrder, ikFlags)`. SHVDN: `timeToPlay=-1, flags=0, startPhase=0, rotOrder=2(YXZ), ikFlags=0`. Rotation in degrees (pitch, roll, heading).",
+   "gotcha": "Does NOT auto-load the dict. To sync several peds, give them all the SAME pos/rot + flags `4096(ExtractInitialOffset)+1024(OverridePhysics)` so each uses its authored offset from the common origin.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "05-animation.md",
+   "id": "positioned-playback-with-task-play-anim-advanced"
+  },
+  {
+   "title": "Ambient scenarios (in place / at position)",
+   "category": "scenario",
+   "problem": "A long looping ambient behavior (lean, smoke, guard, cop idle, drink) with built-in enter/exit + optional prop \u2014 no dict loading.",
+   "method": "`TASK_START_SCENARIO_IN_PLACE(ped, scenarioName, timeToLeave, playEnterAnim)` (rpemotes: `(ped, name, 0, true)`); or `TASK_START_SCENARIO_AT_POSITION(ped, name, x,y,z, heading, timeToLeave, playEnterAnim, warp)`. Names like `WORLD_HUMAN_LEANING`, `WORLD_HUMAN_SMOKING`, `WORLD_HUMAN_GUARD_STAND`, `WORLD_HUMAN_COP_IDLES`, `PROP_HUMAN_SEAT_CHAIR`.",
+   "gotcha": "`timeToLeave=0` = never auto-leave (stays until tasks cleared). Some scenarios are male-only. Exit cleanly with `CLEAR_PED_TASKS_IMMEDIATELY` \u2014 a plain ClearPedTasks can leave the enter/exit half-played.",
+   "source": "rpemotes/client/Emote.lua; shvdn-api/.../TaskInvoker.cs",
+   "file": "05-animation.md",
+   "id": "ambient-scenarios-in-place-at-position"
+  },
+  {
+   "title": "Synchronized scenes: create \u2192 task \u2192 drive phase",
+   "category": "synced-scene",
+   "problem": "Choreograph multiple peds/objects from one shared origin with manual phase scrubbing (cutscene-style).",
+   "method": "1) Load the dict. 2) `sceneId = CREATE_SYNCHRONIZED_SCENE(x,y,z, rotX,rotY,rotZ, rotationOrder=2)` (-1 = fail). 3) Per ped: `TASK_SYNCHRONIZED_SCENE(ped, sceneId, dict, clip, blendIn, blendOut, flags, ragdollFlags, moverBlendIn, ikFlags)`. 4) Drive: `SET_SYNCHRONIZED_SCENE_PHASE(sceneId, 0..1)`, read `GET_SYNCHRONIZED_SCENE_PHASE`, optional `_LOOPED`/`_RATE`.",
+   "gotcha": "The game garbage-collects a synced scene the instant nothing references it \u2014 task a ped onto it the SAME frame you create it or `Exists()` flips false. Use this only when you need frame-accurate phase/paired sync; for simple paired emotes, prefer the cheaper paired-emote trick below.",
+   "source": "shvdn-api/.../FwSyncedScene.cs, TaskInvoker.cs",
+   "file": "05-animation.md",
+   "id": "synchronized-scenes-create-task-drive-phase"
+  },
+  {
+   "title": "Facial animation overlay",
+   "category": "facial",
+   "problem": "Add a facial expression/mood on top of the body anim.",
+   "method": "One-shot `PLAY_FACIAL_ANIM(ped, facialClip, facialDict)` (name THEN dict). Persistent mood: `SET_FACIAL_IDLE_ANIM_OVERRIDE(ped, animName, 0)`; clear `CLEAR_FACIAL_IDLE_ANIM_OVERRIDE(ped)`. Whole set: `SET_FACIAL_CLIPSET(ped, clipset)`. Moods: `mood_happy_1`, `mood_angry_1`, `mood_drunk_1`, `smoking_hold_1`.",
+   "gotcha": "Facial is independent of and survives the body task \u2014 clear it explicitly.",
+   "source": "rpemotes/client/Expressions.lua, Emote.lua; shvdn-api/.../Peds/Ped.cs",
+   "file": "05-animation.md",
+   "id": "facial-animation-overlay"
+  },
+  {
+   "title": "Movement clipset (walk styles)",
+   "category": "clipset",
+   "problem": "Change how a ped walks/runs (swagger, injured, crouched) \u2014 a state, not a one-shot.",
+   "method": "`REQUEST_CLIP_SET(clipset)` + poll `HAS_CLIP_SET_LOADED`, then `SET_PED_MOVEMENT_CLIPSET(ped, clipset, blend)` (rpemotes blend 0.2). Reset `RESET_PED_MOVEMENT_CLIPSET(ped, blend)`. E.g. `move_ped_crouched`, `move_m@swagger`, `move_m@drunk@verydrunk`.",
+   "gotcha": "Clipsets load via `REQUEST_CLIP_SET`, NOT `REQUEST_ANIM_DICT`. The clipset is a persistent STATE \u2014 survives ClearPedTasks; reset it manually.",
+   "source": "rpemotes/client/Walk.lua, Crouch.lua; shvdn-api/.../Peds/Ped.cs",
+   "file": "05-animation.md",
+   "id": "movement-clipset-walk-styles"
+  },
+  {
+   "title": "Prop + bone + anim combo (how to build a skateboard/umbrella rider) \u2b50",
+   "category": "prop-anim",
+   "problem": "Make a ped hold/use an object that rides a bone while an anim plays (board, umbrella, cup, box).",
+   "method": "1) `REQUEST_MODEL(hash)` + poll. 2) `CreateObject(propHash, pedX,pedY,pedZ+0.2, isNetwork, false, false)`. 3) optional `SET_ENTITY_COLLISION(obj,false,false)`. 4) `ATTACH_ENTITY_TO_ENTITY(obj, ped, GET_PED_BONE_INDEX(ped, boneId), offX,offY,offZ, rotX,rotY,rotZ, false, false, false, false, rotOrder=1, true)`. 5) load-dict\u2192TASK_PLAY_ANIM. 6) `SET_MODEL_AS_NO_LONGER_NEEDED`. On stop: delete object, then ClearPedTasks. Schema per prop: `Prop`(model), `PropBone`(id), `PropPlacement={offX,offY,offZ,rotX,rotY,rotZ}` (+ optional Second* set).",
+   "gotcha": "Common bone ids: right hand `28422` (PH_R_Hand), left hand `18905`/`60309`. **For a skateboard, attach the board to a foot/root bone (e.g. SKEL_Root/spine) with a downward Z offset and play a balancing loop.** Create the prop at the ped's coords FIRST, then attach \u2014 attaching a far-away object glitches one frame.",
+   "source": "rpemotes/client/Emote.lua (addProp), client/AnimationList.lua (PropEmotes)",
+   "file": "05-animation.md",
+   "id": "prop-bone-anim-combo-how-to-build-a-skateboard-umbrella-ride"
+  },
+  {
+   "title": "Paired / shared emotes (handshake, hug) without a synced scene",
+   "category": "animation",
+   "problem": "Two peds interact in matched anims facing each other.",
+   "method": "Play a normal clip on each ped from the same dict (e.g. `mp_ped_interaction` \u2192 `handshake_guy_a` + `handshake_guy_b`) and position the partner via sync offsets, NOT a synced scene. Fields: `secondPlayersAnim`, `SyncOffsetFront` (1.0), `SyncOffsetSide` (0.0), `SyncOffsetHeight` (0.0), `SyncOffsetHeading` (180 = face each other).",
+   "gotcha": "Cheap, robust alternative to CREATE_SYNCHRONIZED_SCENE \u2014 no scene-id lifetime to manage. Offsets in meters relative to the initiator's facing. Use a real synced scene only for exact phase lock.",
+   "source": "rpemotes/client/AnimationList.lua (RP.Shared), types.lua",
+   "file": "05-animation.md",
+   "id": "paired-shared-emotes-handshake-hug-without-a-synced-scene"
+  },
+  {
+   "title": "Scrub and re-speed a running anim",
+   "category": "animation",
+   "problem": "Pause on a frame, jump to a phase, fast-forward/slow-mo an anim already playing.",
+   "method": "`SET_ENTITY_ANIM_SPEED(entity, dict, clip, mult)` (0=freeze, 1=normal, 2=double); `SET_ENTITY_ANIM_CURRENT_TIME(entity, dict, clip, phase)` (phase 0-1, NOT seconds); read `GET_ENTITY_ANIM_CURRENT_TIME` (0-1, wraps on loop).",
+   "gotcha": "Addresses the anim by name, so the exact (dict,clip) must still be the active task. Speed 0 is the clean dynamic \"hold pose\" (vs baking the `StayInEndFrame=2` flag).",
+   "source": "shvdn-api/.../Entities/Entity.cs",
+   "file": "05-animation.md",
+   "id": "scrub-and-re-speed-a-running-anim"
+  },
+  {
+   "title": "Stopping anims: targeted vs nuke",
+   "category": "animation",
+   "problem": "End an anim with a blend-out, or hard-clear everything.",
+   "method": "Blend out one: `STOP_ANIM_TASK(ped, dict, clip, -4.0)`. Clear all (blended): `CLEAR_PED_TASKS(ped)`. Instant: `CLEAR_PED_TASKS_IMMEDIATELY(ped)`. In a vehicle prefer `CLEAR_PED_SECONDARY_TASK` then `CLEAR_PED_TASKS`.",
+   "gotcha": "STOP_ANIM_TASK is anim-task only \u2014 scenarios need ClearPedTasks(Immediately); clipsets need RESET_PED_MOVEMENT_CLIPSET; facial needs CLEAR_FACIAL_IDLE_ANIM_OVERRIDE; attached props must be deleted separately.",
+   "source": "shvdn-api/.../TaskInvoker.cs; rpemotes/client/Emote.lua",
+   "file": "05-animation.md",
+   "id": "stopping-anims-targeted-vs-nuke"
+  },
+  {
+   "title": "Detect whether an anim is actually playing",
+   "category": "animation",
+   "problem": "Know when a one-shot finished, or confirm a clip is running (to drive props/cleanup).",
+   "method": "`IS_ENTITY_PLAYING_ANIM(entity, dict, clip, taskFlag=3)`. Pattern: wait until true (started), then loop while true; when false \u2192 ended \u2192 clean up.",
+   "gotcha": "Right after tasking it can be false for a frame or two (blend-in) \u2014 wait for true before treating false as \"finished,\" or you instantly cancel.",
+   "source": "rpemotes/client/Emote.lua; menyoo/.../PedAnimation.cpp",
+   "file": "05-animation.md",
+   "id": "detect-whether-an-anim-is-actually-playing"
+  },
+  {
+   "title": "The emote-DB schema to adopt",
+   "category": "anim-db",
+   "problem": "A reusable, AI-friendly data model for labeled emotes (rpemotes' \u2014 the best-labeled).",
+   "method": "Per entry: `dict`, `anim` (clip), `label`, `emoteType` (Emotes/PropEmotes/Dances/Shared/Walks/Expressions/Exits); OR `scenario`+`scenarioType` for scenarios. `AnimationOptions`: `Flag`, `EmoteDuration`(ms, -1=full), `BlendIn/Out`, `Prop`+`PropBone`+`PropPlacement[6]` (+Second*), `ExitEmote`, `SyncOffset*` (paired), `PtfxAsset/Name/Placement`.",
+   "gotcha": "A key can be an anim OR a scenario \u2014 disambiguated by `scenario`/`scenarioType` vs `dict`/`anim`. Prefer the explicit named fields over the legacy positional `[1..4]` form. (Seeded into `pyscript/catalogs/anims.json`.)",
+   "source": "rpemotes/types.lua, client/AnimationList.lua",
+   "file": "05-animation.md",
+   "id": "the-emote-db-schema-to-adopt"
+  },
+  {
+   "title": "Create a scripted camera with position, rotation, and FOV",
+   "category": "camera",
+   "problem": "Spawn a script-controlled camera with a full frame in one call.",
+   "method": "`handle = CREATE_CAM_WITH_PARAMS(\"DEFAULT_SCRIPTED_CAMERA\", x,y,z, rotX,rotY,rotZ, fov, startActive, rotOrder)`. Use `rotOrder=2` (YXZ, the game default). FOV in degrees (~65 default). Bare `CREATE_CAM(name, startActive)` exists but takes no frame.",
+   "gotcha": "Use a valid cam name (`\"DEFAULT_SCRIPTED_CAMERA\"`); a bad name yields a handle you can't move. Handle -1 = failure (pool full); only \u22650 is valid. `startActive` only sets SET_CAM_ACTIVE \u2014 it does NOT put the cam on screen.",
+   "source": "menyoo/.../Natives/natives.h; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "create-a-scripted-camera-with-position-rotation-and-fov"
+  },
+  {
+   "title": "Make the script camera actually visible (THE mandatory step) \u2b50",
+   "category": "camera",
+   "problem": "Camera created + active, but the screen still shows the gameplay cam.",
+   "method": "After `SET_CAM_ACTIVE(cam, true)`, you MUST call `RENDER_SCRIPT_CAMS(render, ease, easeTime, p3, p4, p5)`. Instant takeover: `RENDER_SCRIPT_CAMS(true, false, 0, false, 0, 0)`. Blend in over N ms: `RENDER_SCRIPT_CAMS(true, true, 3000, true, 0, 0)`. Release to gameplay: `RENDER_SCRIPT_CAMS(false, false, 3000, false, 0, 0)` (ease=true to blend back).",
+   "gotcha": "This is the #1 camera gotcha. SET_CAM_ACTIVE alone never shows the cam. Always pair `SET_CAM_ACTIVE(cam,true)` + `RENDER_SCRIPT_CAMS(true,\u2026)` to enter, `RENDER_SCRIPT_CAMS(false,\u2026)` to exit. 6th arg is always 0.",
+   "source": "shvdn-api/.../Camera/ScriptCameraDirector.cs; menyoo/.../Scripting/Camera.cpp",
+   "file": "06-camera.md",
+   "id": "make-the-script-camera-actually-visible-the-mandatory-step"
+  },
+  {
+   "title": "Set position, rotation, FOV after creation",
+   "category": "camera",
+   "problem": "Move/aim an existing cam (or build one from a bare CREATE_CAM).",
+   "method": "`SET_CAM_COORD(cam, x,y,z)`; `SET_CAM_ROT(cam, rotX,rotY,rotZ, rotOrder=2)`; `SET_CAM_FOV(cam, degrees)`. Euler degrees: X=pitch, Y=roll, Z=yaw/heading. Read `GET_CAM_COORD`, `GET_CAM_ROT(cam, 2)`, `GET_CAM_FOV`.",
+   "gotcha": "Rotation in DEGREES; the order arg must match between SET and GET \u2014 use 2 consistently. Heading is the Z component.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "set-position-rotation-fov-after-creation"
+  },
+  {
+   "title": "Point the camera at a coord or a moving entity",
+   "category": "camera",
+   "problem": "Auto-orient the cam to look at a static point or track a moving target.",
+   "method": "Static: `POINT_CAM_AT_COORD(cam, x,y,z)`. Entity: `POINT_CAM_AT_ENTITY(cam, entity, offX,offY,offZ, isRelative)` \u2014 (0,0,0) aims at origin; `isRelative=true` = offset in the entity's local space. Bone: `POINT_CAM_AT_PED_BONE(cam, ped, boneIndex, ox,oy,oz, true)`. Cancel: `STOP_CAM_POINTING(cam)`.",
+   "gotcha": "While pointing is active, SET_CAM_ROT has no effect \u2014 STOP_CAM_POINTING to get manual rotation back. Pointing orients but does NOT move the cam.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "point-the-camera-at-a-coord-or-a-moving-entity"
+  },
+  {
+   "title": "Attach the camera to an entity for a trailing / follow (skate) cam \u2b50",
+   "category": "attachment",
+   "problem": "Make the cam ride a moving entity at a fixed offset (chase/skate cam behind the player).",
+   "method": "`ATTACH_CAM_TO_ENTITY(cam, entity, offX,offY,offZ, isRelative)` \u2014 `isRelative=true` so the offset is local (Y=-5 behind, Z=2 above). **Combine with `POINT_CAM_AT_ENTITY(cam, entity, 0,0,0, true)` \u2014 that pair IS the trailing/skate cam.** Bone: `ATTACH_CAM_TO_PED_BONE`. Full pos+rot copy: `HARD_ATTACH_CAM_TO_ENTITY(...)`. Detach: `DETACH_CAM(cam)`.",
+   "gotcha": "Plain ATTACH keeps position but NOT the entity's rotation \u2014 it won't swing behind a turning car alone. Add POINT_CAM_AT_ENTITY for orientation, or use HARD_ATTACH to inherit rotation. `isRelative=true` makes the offset track the entity's facing.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "attach-the-camera-to-an-entity-for-a-trailing-follow-skate-c"
+  },
+  {
+   "title": "Interpolate (cinematic blend) between two cameras",
+   "category": "interpolation",
+   "problem": "Smoothly fly from one framing to another over a duration.",
+   "method": "Create BOTH cams (camFrom active/rendering, camTo at the destination frame), then `SET_CAM_ACTIVE_WITH_INTERP(camTo, camFrom, durationMs, easeLocation, easeRotation)` \u2014 destination FIRST, source SECOND. Screen must already be under script cams. Poll `IS_CAM_INTERPOLATING(cam)` for completion.",
+   "gotcha": "Arg order is camTo, camFrom \u2014 reversing blends the wrong way. The destination becomes active; camFrom auto-deactivates. Both cams must exist for the whole blend \u2014 don't DESTROY_CAM the source mid-interp. Do NOT call RENDER_SCRIPT_CAMS again per blend.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "interpolate-cinematic-blend-between-two-cameras"
+  },
+  {
+   "title": "Interpolate a single camera to a new frame in place",
+   "category": "interpolation",
+   "problem": "Move one cam to a new pos/rot/fov over time without a second handle.",
+   "method": "`SET_CAM_PARAMS(cam, x,y,z, rotX,rotY,rotZ, fov, durationMs, graphTypePos, graphTypeRot, rotOrder=2)`. `duration=0` snaps instantly.",
+   "gotcha": "With non-zero duration it internally clones the cam (needs a free pool slot) and fails silently if the pool is full. Use duration=0 to set a frame reliably.",
+   "source": "shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "interpolate-a-single-camera-to-a-new-frame-in-place"
+  },
+  {
+   "title": "Camera shake (handheld / impact feel)",
+   "category": "shake",
+   "problem": "Organic motion or an explosion jolt.",
+   "method": "`SHAKE_CAM(cam, shakeName, amplitude)` \u2014 names: `HAND_SHAKE`, `SMALL/MEDIUM/LARGE_EXPLOSION_SHAKE`, `JOLT_SHAKE`, `VIBRATE_SHAKE`, `ROAD_VIBRATION_SHAKE`, `DRUNK_SHAKE`, `SKY_DIVING_SHAKE`. Amplitude ~0-1 subtle. Live tweak `SET_CAM_SHAKE_AMPLITUDE(cam, v)`; stop `STOP_CAM_SHAKING(cam, immediate)`.",
+   "gotcha": "Shake name is a string (a wrong one silently does nothing). SET_CAM_SHAKE_AMPLITUDE only affects an already-running shake.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "camera-shake-handheld-impact-feel"
+  },
+  {
+   "title": "Depth of field (cinematic shallow focus)",
+   "category": "dof",
+   "problem": "Blur background/foreground so the subject pops.",
+   "method": "`SET_CAM_USE_SHALLOW_DOF_MODE(cam, true)` \u2192 `SET_CAM_NEAR_DOF(cam, nearM)` \u2192 `SET_CAM_FAR_DOF(cam, farM)` \u2192 `SET_CAM_DOF_STRENGTH(cam, 0..1)` (near 1 = heavy blur). Advanced: `SET_CAM_DOF_FNUMBER_OF_LENS`, `SET_CAM_DOF_FOCAL_LENGTH_MULTIPLIER`.",
+   "gotcha": "DOF does nothing unless shallow mode is ON and strength > 0 \u2014 near/far alone won't blur. Near/far are the focus band in meters; the subject sits between them.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "depth-of-field-cinematic-shallow-focus"
+  },
+  {
+   "title": "Seed a script cam from the current gameplay camera",
+   "category": "gameplay-cam",
+   "problem": "Start a scripted cam exactly where the player's view is, for a seamless cut.",
+   "method": "`pos=GET_GAMEPLAY_CAM_COORD()`, `rot=GET_GAMEPLAY_CAM_ROT(2)`, `fov=GET_GAMEPLAY_CAM_FOV()`, feed into `CREATE_CAM_WITH_PARAMS(...)`. Also `GET_GAMEPLAY_CAM_RELATIVE_HEADING/PITCH` (re-apply on release).",
+   "gotcha": "Use the same rotOrder (2) you feed the script cam. Seed \u2192 `RENDER_SCRIPT_CAMS(true, false, 0, \u2026)` gives a frame-perfect cut with no jump.",
+   "source": "menyoo/.../Scripting/GameplayCamera.cpp; shvdn-api/.../Camera/GameplayCamera.cs",
+   "file": "06-camera.md",
+   "id": "seed-a-script-cam-from-the-current-gameplay-camera"
+  },
+  {
+   "title": "Tear down: release the screen, then destroy",
+   "category": "camera",
+   "problem": "Cleanly return control to the gameplay camera and free handles.",
+   "method": "Order matters: 1) `RENDER_SCRIPT_CAMS(false, false, 3000, false, 0, 0)` (ease=true to blend back). 2) `SET_CAM_ACTIVE(cam, false)`. 3) `DESTROY_CAM(cam, false)` per cam, or `DESTROY_ALL_CAMS(false)`. Guard with `DOES_CAM_EXIST(cam)`.",
+   "gotcha": "Destroying the cam WITHOUT first `RENDER_SCRIPT_CAMS(false,\u2026)` can leave the screen stuck/black on a dead cam \u2014 always release rendering BEFORE destroying.",
+   "source": "menyoo/.../Scripting/Camera.cpp; shvdn-api/.../Camera/Camera.cs",
+   "file": "06-camera.md",
+   "id": "tear-down-release-the-screen-then-destroy"
+  },
+  {
+   "title": "The ClipDictionary hierarchy: Animations vs Clips",
+   "category": "ycd-format",
+   "problem": "Know what a `.ycd` holds and why there are two separate lists.",
+   "method": "`.ycd` = `ClipDictionary` with two parallel lists: `animations` (raw baked per-bone track data) and `clips` (named, hashed, *playable* things that reference an animation by hash + add timing/tags). The game only ever plays **Clips**. Sollumz mirrors this as a 4-level empty tree: `CLIP_DICTIONARY` \u2192 `ANIMATIONS`/`CLIPS` containers \u2192 `ANIMATION`/`CLIP` children.",
+   "gotcha": "Animations and Clips are decoupled and linked only by a hash string \u2014 there's no object pointer in the file. If one animation fails to export, the whole dictionary aborts (clips would dangle).",
+   "source": "sollumz/ycd/ycdexport.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "the-clipdictionary-hierarchy-animations-vs-clips"
+  },
+  {
+   "title": "Track ID \u2192 channel mapping (the authoritative table)",
+   "category": "bone-tracks",
+   "problem": "Know which track id means which channel \u2014 the core of the format.",
+   "method": "From `Track(IntEnum)` + `TrackFormatMap`: **0 = BonePosition (Vector3)**, **1 = BoneRotation (Quaternion)**, **2 = BoneScale (Vector3)**; **5 = MoverPosition (Vector3)**, **6 = MoverRotation (Quaternion)**; **7 = CameraPosition**, **8 = CameraRotation**; **17/18 = UV0/UV1**; **27 = CameraFOV (Float)**, **28 = CameraDOF**. `TrackFormat`: Vector3=0, Quaternion=1, Float=2. Blender fcurve paths map: `location`\u21920, `rotation_quaternion`\u21921, `scale`\u21922.",
+   "gotcha": "Track IDs are SPARSE game constants, not sequential (jumps 2\u21925\u21927\u219217\u2026; 3/4 don't exist). Position always precedes rotation. Always look up the format from `TrackFormatMap`, never assume.",
+   "source": "sollumz/tools/animationhelper.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "track-id-channel-mapping-the-authoritative-table"
+  },
+  {
+   "title": "Bones are addressed by HASH, not name (skeleton is load-bearing)",
+   "category": "bone-tracks",
+   "problem": "Understand why you must have the right skeleton to author or read animation data.",
+   "method": "`BoneId.bone_id` is a 32-bit **bone-tag hash**, not a name. Canonical fcurve path is `pose.bones[\"#{tag}\"].location`. Export reads each `pose_bone.bone.bone_properties.tag` (the integer that becomes `bone_id`) and converts name-based paths \u2192 `#{tag}` via the armature's name\u2192tag map.",
+   "gotcha": "Bone tags must match the **target ped/object skeleton's** tags exactly. A wrong skeleton = wrong tags = tracks bind to the wrong bones (or none). Without the armature you can't resolve names\u2194hashes at all. This is *the* reason custom anims historically broke.",
+   "source": "sollumz/tools/animationhelper.py, tools/blenderhelper.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "bones-are-addressed-by-hash-not-name-skeleton-is-load-bearin"
+  },
+  {
+   "title": "The Mover track = root motion (travels the world vs in-place) \u2b50",
+   "category": "mover",
+   "problem": "Make an animation move the entity through the world (a walk that travels) vs play on the spot.",
+   "method": "Root motion = two tracks on synthetic bone **#0**: `MoverPosition` (track 5, Vector3) + `MoverRotation` (track 6, Quaternion). In Blender these are the armature object's `delta_location` / `delta_rotation_quaternion`. When a sequence uses either mover track, the exporter auto-ORs `AnimationFlag.RootMotion (16)` into the animation flags.",
+   "gotcha": "Forgetting the mover (or its RootMotion flag) = the entity won't translate \u2192 the classic \"moonwalking in place\" bug. Mover is stored as bone #0 but driven by the armature object's delta transform, not a real bone. `moverfixup` tags correct drift on specific axes.",
+   "source": "sollumz/tools/animationhelper.py, ycd/ycdexport.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "the-mover-track-root-motion-travels-the-world-vs-in-place"
+  },
+  {
+   "title": "Frames, duration, and 30fps bake semantics",
+   "category": "animation-data",
+   "problem": "Know how time is sampled and how many frames bake on export.",
+   "method": "`duration_secs = action_frame_span / scene_FPS`. `export_frame_count = max(max_keyframes, ceil(duration_frames+1))`. Every track is **densely baked**: the exporter loops each export frame and calls `fcurve.evaluate(...)` \u2014 not sparse keyframes. `sequence_frame_limit = frame_count + 30`.",
+   "gotcha": "GTA anims are conceptually **30fps** (tests gate on 29.97). Export frame count depends on the *current Blender scene FPS* because duration is FPS-derived \u2014 changing scene FPS changes duration and all downstream clip times. Sub-frame timing precision is lost in the bake.",
+   "source": "sollumz/tools/animationhelper.py, ycd/ycdexport.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "frames-duration-and-30fps-bake-semantics"
+  },
+  {
+   "title": "Channel quantization + the quaternion sign-flip fix",
+   "category": "animation-data",
+   "problem": "Understand the per-component compression so values survive the round-trip.",
+   "method": "Each track splits into per-component lists (Vec3\u2192X/Y/Z, Quat\u2192X/Y/Z/W). Constant component \u2192 `Static*`. Else `build_values_channel`: \u226410% unique \u2192 `IndirectQuantizeFloat` (dedup table + indices); else `QuantizeFloat`. `quantum = max(min_consecutive_delta, range/1048576)` (20-bit).",
+   "gotcha": "Quaternions are stored as **4 independent quantized channels** (not 3+reconstructed-W). So the exporter applies a \"flicker fix\": negate `quat[i]` when `dot(quat[i-1], quat[i]) < 0`, because RAGE lerps quaternions per-component with no sign check. ALL quaternion math (bone-space transform, camera fix) must happen BEFORE this sign pass.",
+   "source": "sollumz/ycd/ycdexport.py, tools/animationhelper.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "channel-quantization-the-quaternion-sign-flip-fix"
+  },
+  {
+   "title": "A Clip references an animation by hash + adds timing",
+   "category": "clip",
+   "problem": "Understand the playable Clip and its timing fields.",
+   "method": "`clip_from_object` emits `ClipAnimation` (single) or `ClipAnimationList` (multi). Each sets `animation_hash` (the referenced Animation's hash), `start_time`/`end_time` secs, `rate = (end-start)/clip.duration`. Clip fields: `hash` (the name the game looks up), `name = \"pack:/\"+name`.",
+   "gotcha": "The clip references the animation purely by `animation_hash` string \u2014 **the Animation's hash and the Clip's animation_hash MUST match exactly or the clip plays nothing.** `rate>1` = faster than source; start/end frames let a clip play a sub-range of a longer animation.",
+   "source": "sollumz/ycd/ycdexport.py, properties.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "a-clip-references-an-animation-by-hash-adds-timing"
+  },
+  {
+   "title": "Clip Tags = timeline events (footsteps, audio, MoVE)",
+   "category": "clip",
+   "problem": "Attach gameplay events at points along the clip timeline.",
+   "method": "`ClipTag` has `name`, `start_phase`/`end_phase` (**0..1 normalized**, NOT seconds), and typed `attributes` (Float/Int/Bool/Vector3/4/String/HashString). Tags sorted by start_phase. Operator templates: `moveevent`, `audio`, `foot` (heel/right Bools), `moverfixup`, `facial`, `object`, `armsik`.",
+   "gotcha": "Phases are fractions of clip duration \u2192 real time = phase \u00d7 clip.duration, so re-timing the clip moves all tags. The tag signature hash calc is noted in-code as NOT yet byte-matching R*'s (\"good enough for now\") \u2014 don't rely on signature exactness.",
+   "source": "sollumz/ycd/properties.py, ycd/ycdexport.py, operators.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "clip-tags-timeline-events-footsteps-audio-move"
+  },
+  {
+   "title": "Target type changes the data path: armature vs camera vs material",
+   "category": "animation-data",
+   "problem": "Know how the animation target affects required scene objects + value space.",
+   "method": "`target_id_type` = ARMATURE / CAMERA / MATERIAL. Armatures convert every bone from Blender pose space \u2192 RAGE local space via `calculate_bone_space_transform_matrix` (each bone's `matrix_local` relative to parent). Cameras rotate the rotation quaternion by **\u221290\u00b0 about local X** (RAGE cameras aim +Y, Blender \u2212Z). Materials store UV anim on the material datablock.",
+   "gotcha": "The pose\u2192local conversion makes exported bone values **skeleton-dependent** \u2014 the same Action on a different skeleton produces different stored values. Camera anims silently need the \u221290\u00b0 fix or the camera points sideways. Default vectors differ per track (pos/rot/scale default (0,0,0); UV0 (1,0,0); UV1 (0,1,0)).",
+   "source": "sollumz/ycd/ycdexport.py, tools/animationhelper.py, ycd/properties.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "target-type-changes-the-data-path-armature-vs-camera-vs-mate"
+  },
+  {
+   "title": "Retarget one animation onto a different skeleton \u2b50 (the Mixamo unlock)",
+   "category": "retarget",
+   "problem": "Reuse an Action (or Mixamo/mocap) on a different armature and keep values correct.",
+   "method": "`retarget_animation(anim, old_target, new_target)` (auto-runs on target change): renames action groups `#tag`\u2194bone-name; converts every fcurve path canonical\u2194target form; re-transforms bone location/rotation and camera rotation between old/new bone spaces via `calculate_bone_space_transform_matrix`; runs `setup_armature/camera/material_for_animation`. It also adds COPY_ROTATION constraints `RB_L/R_ThighRoll`\u2190`SKEL_L/R_Thigh` (since .yed roll exprs aren't supported).",
+   "gotcha": "Retarget remaps by the *difference* of bone local matrices between skeletons \u2014 if a tag exists on both with different rest poses it's corrected; **if a tag is missing on the new skeleton, that channel is left in old space (silently wrong).** This is how you bring Mixamo/FBX in: import, map the skeleton, retarget onto the GTA ped skeleton, export.",
+   "source": "sollumz/tools/animationhelper.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "retarget-one-animation-onto-a-different-skeleton-the-mixamo-"
+  },
+  {
+   "title": "Export entry point + the minimal authoring recipe",
+   "category": "export",
+   "problem": "The actual operator and the minimum scene setup to produce a `.ycd`.",
+   "method": "Operator `sollumz.export_assets` dispatches `CLIP_DICTIONARY` \u2192 `export_ycd()` \u2192 `clip_dictionary_from_object()` \u2192 `write_xml()`. **Output is CodeWalker `.ycd.xml`** (NOT binary) \u2014 CodeWalker (or CodeWalker.API) converts `.ycd.xml` \u2192 binary `.ycd`. Minimal recipe: armature with correct bone tags + an Action with keyframes \u2192 set the ANIMATION's `action`/`hash`/`target_id` \u2192 a CLIP with `hash`/`name`/`duration` whose `animation_hash` == the Animation's hash \u2192 select the CLIP_DICTIONARY root \u2192 export.",
+   "gotcha": "Breakers: wrong skeleton (wrong tags), missing mover (no world translation), animation-hash \u2260 clip's animation_hash (plays nothing), empty action (aborts the whole dictionary). The `.ycd.xml`\u2192`.ycd` conversion is a separate CodeWalker step \u2014 that's the seam where our CodeWalker.API + reload chain takes over.",
+   "source": "sollumz/sollumz_operators.py, ycd/ycdexport.py, ycd/ycdimport.py",
+   "file": "07-custom-animation-authoring.md",
+   "id": "export-entry-point-the-minimal-authoring-recipe"
+  },
+  {
+   "title": "Load a PTFX asset before using it",
+   "category": "ptfx-assets",
+   "problem": "A particle dictionary (asset) must be streamed in before any effect from it can spawn.",
+   "method": "`REQUEST_NAMED_PTFX_ASSET(asset)` \u2192 loop `WAIT(0)` while `!HAS_NAMED_PTFX_ASSET_LOADED(asset)` \u2192 then `USE_PARTICLE_FX_ASSET(asset)` immediately before the start call.",
+   "gotcha": "`REQUEST_NAMED_PTFX_ASSET` is async \u2014 spawning before `HAS_NAMED_PTFX_ASSET_LOADED` silently produces nothing.",
+   "source": "rpemotes/client/PTFX.lua, menyoo/.../Scripting/PTFX.cpp",
+   "file": "08-ptfx-particles.md",
+   "id": "load-a-ptfx-asset-before-using-it"
+  },
+  {
+   "title": "Rebind the asset before EVERY spawn (the #1 PTFX gotcha) \u2b50",
+   "category": "ptfx-assets",
+   "problem": "The native that sets which asset a start call uses is a one-shot global, not per-handle.",
+   "method": "Call `USE_PARTICLE_FX_ASSET(asset)` (a.k.a. `_SET_PTFX_ASSET_NEXT_CALL`) on the line immediately before EACH `START_PARTICLE_FX_*` call. Menyoo does this inside every `Start(...)` overload.",
+   "gotcha": "It only sets the asset for the NEXT start call. Two back-to-back spawns without re-calling it \u2192 the second uses whatever asset was last set (often wrong) or fails. Re-bind every single time.",
+   "source": "menyoo/.../Scripting/PTFX.cpp",
+   "file": "08-ptfx-particles.md",
+   "id": "rebind-the-asset-before-every-spawn-the-1-ptfx-gotcha"
+  },
+  {
+   "title": "Spawn a looped effect at a coord / on an entity / on a bone",
+   "category": "ptfx",
+   "problem": "Place a persistent effect (fire, smoke, aura, sparks) in the world or on something.",
+   "method": "`USE_PARTICLE_FX_ASSET(asset)` then one of:",
+   "gotcha": "Looped spawns return an INT handle (\u22650) \u2014 keep it for control/teardown. **In the bone native, `boneIndex` sits AFTER the rotation triplet and BEFORE scale** (different from the non-bone native). Effect moves with the entity automatically \u2014 don't re-spawn each frame.",
+   "source": "menyoo/.../Scripting/PTFX.cpp; rpemotes/client/PTFX.lua",
+   "file": "08-ptfx-particles.md",
+   "id": "spawn-a-looped-effect-at-a-coord-on-an-entity-on-a-bone"
+  },
+  {
+   "title": "Spawn a one-shot (non-looped) effect",
+   "category": "ptfx",
+   "problem": "Fire a single burst \u2014 explosion, blood hit, muzzle puff, splash \u2014 that self-cleans.",
+   "method": "`USE_PARTICLE_FX_ASSET(asset)`, optionally `SET_PARTICLE_FX_NON_LOOPED_COLOUR(r,g,b)` / `_ALPHA(a)` FIRST, then `START_PARTICLE_FX_NON_LOOPED_AT_COORD(...)` / `_ON_ENTITY(...)` / `_ON_PED_BONE(...)` (same arg shapes as looped).",
+   "gotcha": "Non-looped returns a **BOOL** (success), NOT a handle \u2014 you can't recolor/move/stop it later, so set colour/alpha BEFORE starting (they're global one-shots with no handle arg). Menyoo tries non-looped first and falls back to looped on `false`.",
+   "source": "menyoo/.../Scripting/PTFX.cpp; ptfx-mod/PTFX/PTFX/Ptfx.cs",
+   "file": "08-ptfx-particles.md",
+   "id": "spawn-a-one-shot-non-looped-effect"
+  },
+  {
+   "title": "Live-control a running looped effect",
+   "category": "ptfx-control",
+   "problem": "Change a spawned looped fx via its handle.",
+   "method": "`SET_PARTICLE_FX_LOOPED_COLOUR(handle, r,g,b, false)` (r/g/b **0.0\u20131.0**), `SET_PARTICLE_FX_LOOPED_ALPHA(handle, a)` (0\u20131), `SET_PARTICLE_FX_LOOPED_SCALE(handle, scale)`, `SET_PARTICLE_FX_LOOPED_OFFSETS(handle, ox,oy,oz, rx,ry,rz)`, `SET_PARTICLE_FX_LOOPED_EVOLUTION(handle, \"evoName\", value, false)`.",
+   "gotcha": "Colour/alpha are normalized **0.0\u20131.0 floats, not 0\u2013255** (Menyoo divides by 255). Only LOOPED handles can be modified; non-looped can't.",
+   "source": "menyoo/.../Scripting/PTFX.cpp; rpemotes/client/PTFX.lua",
+   "file": "08-ptfx-particles.md",
+   "id": "live-control-a-running-looped-effect"
+  },
+  {
+   "title": "Stop, remove, check existence",
+   "category": "ptfx-control",
+   "problem": "Tear down a looped effect cleanly without touching a dead handle.",
+   "method": "`DOES_PARTICLE_FX_LOOPED_EXIST(handle)` \u2192 alive? `STOP_PARTICLE_FX_LOOPED(handle, false)` (graceful, fades) or `REMOVE_PARTICLE_FX(handle, false)` (immediate). Area: `REMOVE_PARTICLE_FX_IN_RANGE(x,y,z, radius)`. Free memory: `REMOVE_NAMED_PTFX_ASSET(asset)`. Set your stored handle to -1 after.",
+   "gotcha": "Guard `handle == -1` before querying. rpemotes uses STOP (graceful) for emotes; Menyoo uses REMOVE (hard).",
+   "source": "menyoo/.../Scripting/PTFX.cpp; rpemotes/client/PTFX.lua",
+   "file": "08-ptfx-particles.md",
+   "id": "stop-remove-check-existence"
+  },
+  {
+   "title": "Full looped-on-bone lifecycle (copy-paste shape)",
+   "category": "ptfx-attach",
+   "problem": "End-to-end: attach a persistent effect to a moving bone, remove later (e.g. grind sparks on a skateboard, exhaust flame).",
+   "method": "1) `REQUEST_NAMED_PTFX_ASSET(\"core\")` + poll. 2) `bone = GET_ENTITY_BONE_INDEX_BY_NAME(veh, \"exhaust\")`. 3) `USE_PARTICLE_FX_ASSET(\"core\")` (rebind here). 4) `h = START_PARTICLE_FX_LOOPED_ON_ENTITY_BONE(\"ent_amb_steam_pipe_lgt\", veh, 0,0,0, 0,0,0, bone, 1.0, 0,0,0)`. 5) live: `SET_PARTICLE_FX_LOOPED_COLOUR(h, 1.0,0.3,0.0, false)`. 6) teardown: `if (DOES_PARTICLE_FX_LOOPED_EXIST(h)) REMOVE_PARTICLE_FX(h, false); h=-1; REMOVE_NAMED_PTFX_ASSET(\"core\")`.",
+   "gotcha": "Load (step 1) is once; rebind (step 3) is before EVERY start. Forgetting step 3 = the classic silent/wrong-asset bug.",
+   "source": "synthesized from menyoo PTFX.cpp + rpemotes PTFX.lua",
+   "file": "08-ptfx-particles.md",
+   "id": "full-looped-on-bone-lifecycle-copy-paste-shape"
+  },
+  {
+   "title": "Asset \u2192 effect name structure + ~12 common pairs",
+   "category": "ptfx-assets",
+   "problem": "Every spawn uses an (asset, effect) PAIR; you need real ones.",
+   "method": "Asset = the streamed dictionary (`\"core\"`, `\"scr_indep_fireworks\"`) passed to `USE_PARTICLE_FX_ASSET`; effect = the named particle inside it (first arg to `START_PARTICLE_FX_*`). Common pairs (Menyoo-verified marked \u2713; bare-`core` are standard, cross-check vs DurtyFree `particleEffectsCompact.json`):",
+   "gotcha": "The effect name is meaningless without its owning asset streamed in under that exact name. `core` / `core_snow` hold most ambient effects. The full machine-readable DB is DurtyFree's `particleEffectsCompact.json` (what ptfx-mod downloads).",
+   "source": "menyoo/.../Submenus/PtfxSubs.cpp; ptfx-mod/PTFX/PTFX/Ptfx.cs (DurtyFree data source)",
+   "file": "08-ptfx-particles.md",
+   "id": "asset-effect-name-structure-12-common-pairs"
+  },
+  {
+   "title": "Build and run a task sequence (the ped=0 trick) \u2b50",
+   "category": "task-sequence",
+   "problem": "Chain multiple tasks (walk \u2192 wait \u2192 fight) so a ped runs them in order.",
+   "method": "1) `OPEN_SEQUENCE_TASK(&seqId)` (pointer out-param). 2) Add tasks but pass **ped handle = 0** to every `TASK_*` (e.g. `TASK_FOLLOW_NAV_MESH_TO_COORD(0, x,y,z, ...)`, `TASK_PAUSE(0, 3000)`, `TASK_COMBAT_PED(0, target, 0, 16)`). 3) optional `SET_SEQUENCE_TO_REPEAT(seqId, repeat)`. 4) `CLOSE_SEQUENCE_TASK(seqId)`. 5) `TASK_PERFORM_SEQUENCE(realPed, seqId)`. 6) `CLEAR_SEQUENCE_TASK(&seqId)` AFTER performing.",
+   "gotcha": "Inside the sequence the ped arg MUST be 0 (placeholder) \u2014 using the real handle silently breaks it. `CLEAR_PED_TASKS(ped)` before PERFORM; `CLEAR_SEQUENCE_TASK` only after.",
+   "source": "shvdn-api/.../Peds/TaskSequence.cs, Tasks.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "build-and-run-a-task-sequence-the-ped-0-trick"
+  },
+  {
+   "title": "Make scripted tasks stick (stop peds abandoning them) \u2b50",
+   "category": "task-status",
+   "problem": "Ambient peds drop your task on any \"shocking event\" (gunfire, the player, a car) and revert to default AI.",
+   "method": "`SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(ped, true)` (0x9F8AA94D6D97DBF4). Also `SET_PED_KEEP_TASK(ped, true)` (0x971D38760FBC02EF) so the task survives when the ped goes ambient. Per-task variant: `TASK_SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(ped, toggle)`.",
+   "gotcha": "This is THE single most important call for scene depth \u2014 without it peds in a sequence/combat wander off on the first disturbance. (SHVDN: `Ped.BlockPermanentEvents` / `AlwaysKeepTask`.)",
+   "source": "shvdn-api/.../Peds/Ped.cs; menyoo/.../Submenus/FunnyVehicles.cpp",
+   "file": "09-ped-ai-tasks.md",
+   "id": "make-scripted-tasks-stick-stop-peds-abandoning-them"
+  },
+  {
+   "title": "Poll whether a scripted task is still running",
+   "category": "task-status",
+   "problem": "Know when a ped finished / is performing / never started, to sequence next steps.",
+   "method": "`GET_SCRIPT_TASK_STATUS(ped, taskNameHash)` (0x77F1BEB8863288D5) \u2192 `ScriptTaskStatus`: 0 WaitingToStart, 1 Performing, 2 Dormant, 3 Vacant, 7 Finished. Pass `Any = 0x55966344` for the live state regardless of which task. Useful hashes: PerformSequence 0x0E763797, GoToCoordAnyMeans 0x93399E79, FollowNavMeshToCoord 0x2A89B8A7, SmartFleePed 0x6BA30179, WanderStandard 0xBBA3B7CA, EnterVehicle 0x950B6492.",
+   "gotcha": "Querying a specific hash returns `7 Finished` if that hash ISN'T the current task \u2014 so `7` means \"not running this,\" not necessarily \"completed.\" Use `Any` for the live state.",
+   "source": "shvdn-api/.../Peds/ScriptTaskStatus.cs, ScriptTaskNameHash.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "poll-whether-a-scripted-task-is-still-running"
+  },
+  {
+   "title": "Walk/run a ped to a coord via the nav mesh",
+   "category": "ai-move",
+   "problem": "Path a ped naturally (around walls, stairs) to a position.",
+   "method": "`TASK_FOLLOW_NAV_MESH_TO_COORD(ped, x,y,z, moveBlendRatio, timeBeforeWarp, radius, navFlags, finalHeading)`. moveBlendRatio: 1.0 walk, 2.0 run, 3.0 sprint. timeBeforeWarp = ms before teleport if stuck (-1 never). radius \u2248 0.25. finalHeading 40000.0 = \"leave as is\".",
+   "gotcha": "If no path exists the ped just stands still \u2014 no error. Use `TASK_GO_STRAIGHT_TO_COORD(ped, x,y,z, moveBlendRatio, time, finalHeading, targetRadius)` to ignore paths.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "walk-run-a-ped-to-a-coord-via-the-nav-mesh"
+  },
+  {
+   "title": "Send a ped to a point by ANY means (will commandeer a car)",
+   "category": "ai-move",
+   "problem": "Get a ped to a far position, letting them grab a vehicle if faster.",
+   "method": "`TASK_GO_TO_COORD_ANY_MEANS(ped, x,y,z, moveBlendRatio, vehicle, useLongRangeVehiclePathing, drivingFlags, maxRangeToShootTargets)`. vehicle = a handle to use or 0 = pick any. drivingFlags = see the driving-style card. maxRangeToShootTargets = -1 to disable.",
+   "gotcha": "A non-existent `vehicle` handle silently fails (no task). Pass 0 for \"any.\" For far destinations set `useLongRangeVehiclePathing = true`.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs; menyoo natives.h (0x5BC448CB78FA3E88)",
+   "file": "09-ped-ai-tasks.md",
+   "id": "send-a-ped-to-a-point-by-any-means-will-commandeer-a-car"
+  },
+  {
+   "title": "Follow / go to another entity (companion)",
+   "category": "ai-move",
+   "problem": "Make a ped approach or tail another entity.",
+   "method": "One-shot approach: `TASK_GOTO_ENTITY_OFFSET_XY(ped, target, timeout, ox,oy,oz, moveSpeed, persist)`. Persistent follow: `TASK_FOLLOW_TO_OFFSET_OF_ENTITY(ped, entity, ox,oy,oz, movementSpeed, timeout, stoppingRange, persistFollowing)` (0x304AE42E357B8C7E).",
+   "gotcha": "For a bodyguard who keeps up, use `TASK_FOLLOW_TO_OFFSET_OF_ENTITY` with `persistFollowing=true` and `stoppingRange` ~2\u201310; the OFFSET_XY one completes once. Pair with `SET_PED_KEEP_TASK`.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs; menyoo natives.h",
+   "file": "09-ped-ai-tasks.md",
+   "id": "follow-go-to-another-entity-companion"
+  },
+  {
+   "title": "Make a ped wander ambiently",
+   "category": "ai-move",
+   "problem": "Idle, lifelike wandering so the scene isn't full of statues.",
+   "method": "`TASK_WANDER_STANDARD(ped, 0, 0)` (heading + keep-moving bool). Bounded: `TASK_WANDER_IN_AREA(ped, x,y,z, radius, minLength, timeBetweenWalks)`.",
+   "gotcha": "For wander, LEAVE `BLOCKING_OF_NON_TEMPORARY_EVENTS` off \u2014 wandering IS the ambient behavior that blocking would suppress.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "make-a-ped-wander-ambiently"
+  },
+  {
+   "title": "Drive a ped's vehicle to a coordinate",
+   "category": "ai-drive",
+   "problem": "Make a ped drive to a destination with realistic traffic behavior.",
+   "method": "`TASK_VEHICLE_DRIVE_TO_COORD_LONGRANGE(ped, vehicle, x,y,z, speed, driveMode, stopRange)` (0x158BB33F920D360C) \u2014 best for long trips. Full: `TASK_VEHICLE_DRIVE_TO_COORD(ped, vehicle, x,y,z, speed, p6, vehicleModel, drivingMode, stopRange, straightLineDistance)`. speed in m/s (15\u201330 normal).",
+   "gotcha": "Ped must already be in the driver seat. speed is m/s not mph. Use LONGRANGE when far from the player or nodes won't stream and the car stops.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "drive-a-ped-s-vehicle-to-a-coordinate"
+  },
+  {
+   "title": "Driving-style bitflags (the real values)",
+   "category": "ai-drive",
+   "problem": "Control how a driving ped behaves (obey lights, swerve, plough through).",
+   "method": "`drivingFlags` bitfield: StopForVehicles=1, StopForPeds=2, SwerveAroundAllVehicles=4, SteerAroundStationaryVehicles=8, SteerAroundPeds=16, SteerAroundObjects=32, StopAtTrafficLights=128, AllowGoingWrongWay=512, Reverse=1024, UseWanderFallback=2048, ForceStraightLine=16777216, StopAtDestination=2147483648. Composite modes: Normal `786603 (0xC00AB)`, IgnoreLights `2883621 (0x2C0025)`, AvoidTraffic `786469`, PloughThrough `262144`, Rushed `0x400C0025`. Scalar shorthands `6`=AvoidTrafficExtremely, `5`=SometimesOvertake.",
+   "gotcha": "Same magic numbers as legacy `DrivingStyle`. Add `UseWanderFallback (2048)` so a failed path cruises randomly instead of beelining.",
+   "source": "shvdn-api/.../VehicleAi/Task/VehicleDrivingFlags.cs, DrivingStyle.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "driving-style-bitflags-the-real-values"
+  },
+  {
+   "title": "Drive-wander (ambient traffic)",
+   "category": "ai-drive",
+   "problem": "A driver cruising aimlessly for traffic depth.",
+   "method": "`TASK_VEHICLE_DRIVE_WANDER(ped, vehicle, speed, drivingStyle)` (0x480142959D337D00). speed m/s, drivingStyle = the flags above (e.g. 786603).",
+   "gotcha": "Ped must be the driver; add 2048 (wander fallback) to the flags.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "drive-wander-ambient-traffic"
+  },
+  {
+   "title": "Enter / leave a vehicle with seat indices",
+   "category": "ai-drive",
+   "problem": "Board a specific seat or exit.",
+   "method": "`TASK_ENTER_VEHICLE(ped, vehicle, timeout, seatIndex, speed, flag, null)` (0xC20E50AA46D09CA8). **Seat indices: -1 = driver, 0 = front passenger, 1 = rear-left, 2 = rear-right, -2 = any free.** speed 1.0 walk / 2.0 run. Leave: `TASK_LEAVE_VEHICLE(ped, vehicle, flags)`. Instant: `TASK_WARP_PED_INTO_VEHICLE(ped, vehicle, seatIndex)`.",
+   "gotcha": "Seat -1 is the DRIVER (not 0). EnterVehicleFlags: WarpIn=16, JackAnyone=8, WarpToDoor=2, DontCloseDoor=256. LeaveVehicleFlags: WarpOut=16, BailOut=4096 (jump at speed), DontWaitForStop=64.",
+   "source": "shvdn-api/.../Peds/Task/Vehicle/EnterVehicleFlags.cs, LeaveVehicleFlags.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "enter-leave-a-vehicle-with-seat-indices"
+  },
+  {
+   "title": "Make a ped fight a target / nearby enemies",
+   "category": "ai-combat",
+   "problem": "Put a ped into combat vs a specific ped or all hated peds around them.",
+   "method": "Specific: `TASK_COMBAT_PED(ped, targetPed, combatFlags, threatResponseFlags)` (0xF166E48407BAC484) \u2014 pass `(ped, target, 0, 16)`. Area: `TASK_COMBAT_HATED_TARGETS_AROUND_PED(ped, radius, combatFlags)` e.g. `(ped, 400.0, 0)`. Timed: `TASK_COMBAT_PED_TIMED(ped, target, ms, flags)`.",
+   "gotcha": "\"Hated targets\" only engages Neutral/Dislike/Hate peds \u2014 none nearby \u2192 task ends instantly. The 4th arg is the THREAT-response flag (16 standard), not combat flags. Set `SET_PED_COMBAT_ABILITY(ped, 2)` first for competence. (See file 10 for why-won't-my-ped-fight.)",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs; menyoo Routine.cpp",
+   "file": "09-ped-ai-tasks.md",
+   "id": "make-a-ped-fight-a-target-nearby-enemies"
+  },
+  {
+   "title": "Shoot at a target (without full combat AI)",
+   "category": "ai-combat",
+   "problem": "Have an armed ped open fire on an entity/position.",
+   "method": "`TASK_SHOOT_AT_ENTITY(ped, target, duration, firingPatternHash)` (duration ms, -1 = until dead; 0 = default pattern). Position: `TASK_SHOOT_AT_COORD(ped, x,y,z, duration, pattern)`. Aim only: `TASK_AIM_GUN_AT_ENTITY(ped, target, duration, instantBlend)`.",
+   "gotcha": "The ped must hold a gun-flagged weapon (not melee/thrown) or nothing happens. `FIRING_PATTERN_FULL_AUTO = 0xC6EE6B4C`.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "shoot-at-a-target-without-full-combat-ai"
+  },
+  {
+   "title": "Flee, react-and-flee, or surrender",
+   "category": "ai-flee",
+   "problem": "Civilians running from danger, or hands up.",
+   "method": "Flee a ped: `TASK_SMART_FLEE_PED(ped, fleeTarget, safeDistance, fleeTime, preferPavements, updateToNearestHated)` (safeDistance 100.0, fleeTime -1 = forever). Flee a coord: `TASK_SMART_FLEE_COORD(ped, x,y,z, distance, time, preferPavements, quitIfOutOfRange)`. React+flee (startle anim first): `TASK_REACT_AND_FLEE_PED(ped, fleeTarget)`. Surrender: `TASK_HANDS_UP(ped, duration, facingPed, timeToFace, flags)`.",
+   "gotcha": "time -1 = flee forever; positive = ms. `TASK_REACT_AND_FLEE_PED` is the cinematic one (only 2 args). For a panic scene, react-and-flee then smart-flee.",
+   "source": "shvdn-api/.../Peds/Task/TaskInvoker.cs",
+   "file": "09-ped-ai-tasks.md",
+   "id": "flee-react-and-flee-or-surrender"
+  },
+  {
+   "title": "Create two hostile factions (full relationship-group recipe) \u2b50",
+   "category": "relationship",
+   "problem": "Two groups that fight each other on sight.",
+   "method": "1) `ADD_RELATIONSHIP_GROUP(\"name\", &groupHash)` per group \u2014 it writes the hash through the out-pointer (init hash=0). 2) `SET_RELATIONSHIP_BETWEEN_GROUPS(relationship, group1, group2)` then **again with group1/group2 SWAPPED**. Use `5` (Hate). 3) `SET_PED_RELATIONSHIP_GROUP_HASH(ped, groupHash)` per ped. Relationship ints: 0 Companion, 1 Respect, 2 Like, 3 Neutral, 4 Dislike, 5 Hate.",
+   "gotcha": "`SET_RELATIONSHIP_BETWEEN_GROUPS` is ONE-DIRECTIONAL \u2014 set only A\u2192B and the war is lopsided. Call it twice, swapped. Also set each group's relationship to ITSELF to Respect (`SET_RELATIONSHIP_BETWEEN_GROUPS(1, g, g)`) or allies infight.",
+   "source": "menyoo/.../Scripting/World.cpp; gangwar/SimpleGangWar.cs",
+   "file": "10-relationships-combat-squads.md",
+   "id": "create-two-hostile-factions-full-relationship-group-recipe"
+  },
+  {
+   "title": "Friendly/hostile to the player via the player's group",
+   "category": "relationship",
+   "problem": "Decide whether a ped treats the player as ally or enemy.",
+   "method": "Get the player group hash (SHVDN `Game.Player.Character.RelationshipGroup`), then `SET_RELATIONSHIP_BETWEEN_GROUPS(5, enemyGroup, playerGroup)` + swapped for hostile, or `1` (Respect) both ways for friendly.",
+   "gotcha": "Relationship group governs who-hates-who ONLY; following is a separate ped-group system (bodyguard card). A ped can Respect the player and still not follow.",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "10-relationships-combat-squads.md",
+   "id": "friendly-hostile-to-the-player-via-the-player-s-group"
+  },
+  {
+   "title": "Force a ped to actually fight (the \"why won't my ped attack\" fix) \u2b50",
+   "category": "aggression",
+   "problem": "Ped is hostile by relationship but just stands, flees, or ignores enemies.",
+   "method": "All three: 1) `SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(ped, true)` \u2014 stop ambient AI overriding combat with idle/flee. 2) `SET_PED_FLEE_ATTRIBUTES(ped, 0, 0)` to clear flee (or bit 512 NeverFlee enabled). 3) `SET_PED_COMBAT_ATTRIBUTES(ped, 46, true)` (+ `5` AlwaysFight). Then task `TASK_COMBAT_HATED_TARGETS_AROUND_PED(ped, radius, 0)`. Also `SET_PED_KEEP_TASK(ped, true)`.",
+   "gotcha": "Relationship Hate alone is NOT enough \u2014 ambient non-temporary events (flee/cower/wander) preempt combat every few seconds. `SET_BLOCKING_OF_NON_TEMPORARY_EVENTS=true` is the single most important call.",
+   "source": "menyoo/.../Menu/Routine.cpp; gangwar/SimpleGangWar.cs",
+   "file": "10-relationships-combat-squads.md",
+   "id": "force-a-ped-to-actually-fight-the-why-won-t-my-ped-attack-fi"
+  },
+  {
+   "title": "Key combat-attribute IDs for SET_PED_COMBAT_ATTRIBUTES",
+   "category": "combat-tuning",
+   "problem": "The exact attribute IDs that control cover, vehicles, aggression, accuracy.",
+   "method": "`SET_PED_COMBAT_ATTRIBUTES(ped, attributeId, enabled)` \u2014 one flag per call. IDs (SHVDN enum index): 0 CanUseCover, 1 CanUseVehicles, 2 CanDoDrivebys, 3 CanLeaveVehicle, 5 AlwaysFight, 13 Aggressive, 14 CanInvestigate, 17 AlwaysFlee, 21 CanChaseTargetOnFoot, 27 PerfectAccuracy, 34 CanShootWithoutLos, 46 CanFightArmedPedsWhenNotArmed, 52 CanCharge.",
+   "gotcha": "Each call toggles ONE bit \u2014 you can't OR them; loop per ID. Brawler-who-won't-run: enable 5 (AlwaysFight), disable 3 (CanLeaveVehicle), disable 17 (AlwaysFlee). 27 (PerfectAccuracy) overrides SET_PED_ACCURACY entirely.",
+   "source": "shvdn-api/.../Peds/CombatAttributes.cs; menyoo STSTasks.cpp",
+   "file": "10-relationships-combat-squads.md",
+   "id": "key-combat-attribute-ids-for-set-ped-combat-attributes"
+  },
+  {
+   "title": "Tune combat skill: ability, movement, range, accuracy, senses",
+   "category": "combat-tuning",
+   "problem": "Set how good and aggressive a fighter is.",
+   "method": "`SET_PED_COMBAT_ABILITY(ped, 0|1|2)` (Poor/Average/Professional). `SET_PED_COMBAT_MOVEMENT(ped, 0|1|2|3)` (Stationary/Defensive/Offensive/Suicidal). `SET_PED_COMBAT_RANGE(ped, 0|1|2)` (Near/Medium/Far). `SET_PED_ACCURACY(ped, 0-100)`. `SET_PED_SEEING_RANGE(ped, meters)` + `SET_PED_HEARING_RANGE(ped, meters)`. `SET_PED_FIRING_PATTERN(ped, patternHash)`.",
+   "gotcha": "Movement 0/3 \"don't work as expected\" (gang-war note). **For squads to engage across distance you MUST raise `SET_PED_SEEING_RANGE` to the inter-spawn distance** or far-apart sides never aggro. ability is 0\u20132 (engine clamps higher).",
+   "source": "gangwar/SimpleGangWar.cs; menyoo natives.h",
+   "file": "10-relationships-combat-squads.md",
+   "id": "tune-combat-skill-ability-movement-range-accuracy-senses"
+  },
+  {
+   "title": "Spawn a battle-ready ped (full per-ped setup)",
+   "category": "squad",
+   "problem": "One repeatable recipe to spawn a fighter on a faction.",
+   "method": "1) `CREATE_PED(...)`. 2) give weapon + ammo. 3) set health/armor/accuracy. 4) `SET_PED_RELATIONSHIP_GROUP_HASH(ped, faction)`. 5) `SET_PED_COMBAT_RANGE`/`_MOVEMENT`. 6) `SET_PED_COMBAT_ATTRIBUTES(ped, 46, true)` (+5 AlwaysFight). 7) `SET_PED_SEEING_RANGE(ped, spawnDistance)`. 8) `CLEAR_PED_TASKS_IMMEDIATELY`. 9) `SET_PED_KEEP_TASK(ped, true)`. 10) each tick: if idle, re-task toward enemies.",
+   "gotcha": "Set relationship group AND combat attributes BEFORE tasking, and **re-task idle peds every tick** \u2014 they finish/lose tasks and go idle mid-battle.",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "10-relationships-combat-squads.md",
+   "id": "spawn-a-battle-ready-ped-full-per-ped-setup"
+  },
+  {
+   "title": "Drive squads toward the enemy (offensive tasking)",
+   "category": "squad",
+   "problem": "Make a side advance and engage rather than camp.",
+   "method": "Per ped each tick if not fighting: `TASK_COMBAT_HATED_TARGETS_AROUND_PED(ped, radius, 0)`, OR run them across the map first (`TASK_GO_TO_COORD\u2026`/RunTo enemy spawn) to get into LOS, OR `TASK_COMBAT_PED(ped, target, 0, 16)`. Set `SET_PED_COMBAT_MOVEMENT(ped, 2)` (Offensive) to advance while fighting.",
+   "gotcha": "`FightAgainstHatedTargets` only engages within `radius` AND seeing range \u2014 combine with a large seeing range. Run-to-spawn gets the sides into LOS so the hate relationship actually triggers combat.",
+   "source": "gangwar/SimpleGangWar.cs; menyoo Routine.cpp",
+   "file": "10-relationships-combat-squads.md",
+   "id": "drive-squads-toward-the-enemy-offensive-tasking"
+  },
+  {
+   "title": "Bodyguards: add peds to the PLAYER's group so they follow",
+   "category": "squad",
+   "problem": "Spawned allies that follow the player.",
+   "method": "1) `GET_PLAYER_GROUP(player)` \u2192 group id. 2) `SET_PED_AS_GROUP_MEMBER(ped, groupId)` (or `_GROUP_LEADER`). 3) `SET_PED_CAN_TELEPORT_TO_GROUP_LEADER(ped, groupId, true)`. 4) make them friendly via relationship (Respect both ways) so they don't attack you. Iterate: `GET_PED_AS_GROUP_MEMBER(groupId, n)`, `IS_PED_GROUP_MEMBER(ped, groupId)`.",
+   "gotcha": "**Ped groups (following) and relationship groups (hate/like) are SEPARATE systems** \u2014 group membership makes them follow but NOT friendly, and vice-versa. Set both. For a new `CREATE_GROUP`, add the leader the SAME frame or the engine GCs the empty group.",
+   "source": "menyoo/.../Scripting/GTAped.cpp; shvdn-api/.../PedGroup.cs",
+   "file": "10-relationships-combat-squads.md",
+   "id": "bodyguards-add-peds-to-the-player-s-group-so-they-follow"
+  },
+  {
+   "title": "Squad formation and spacing",
+   "category": "squad",
+   "problem": "How group members arrange around their leader.",
+   "method": "`SET_GROUP_FORMATION(groupId, formationType)` (0 Default, 1 Circle, 2 wedge, 3 line/column). `SET_GROUP_FORMATION_SPACING(groupId, x, y, z)` (Menyoo passes y,z = -1.0 = keep default). `RESET_GROUP_FORMATION_DEFAULT_SPACING(groupHandle)`.",
+   "gotcha": "Pass -1.0 (0xBF800000) for axes you want left at default. Formation applies to the whole group id, not per-ped.",
+   "source": "menyoo/.../Scripting/GTAped.cpp",
+   "file": "10-relationships-combat-squads.md",
+   "id": "squad-formation-and-spacing"
+  },
+  {
+   "title": "Flee-attribute bitflags (fine-grained \"won't run\" control)",
+   "category": "aggression",
+   "problem": "Stop or shape fleeing precisely.",
+   "method": "`SET_PED_FLEE_ATTRIBUTES(ped, attributeFlags, enable)` \u2014 BITWISE: enable=1 adds bits, enable=0 removes. Bits: 1 UseCover, 2 UseVehicle, 512 NeverFlee, 1024 DisableCover, 2048 DisableExitVehicle, 32768 CowerInsteadOfFlee, 65536 ForceExitVehicle. Clear all: `(ped, 0, 0)`.",
+   "gotcha": "Additive \u2014 `(ped, 0, 0)` clears all only via enable=0. For guaranteed no-flee enable bit 512 (NeverFlee) AND pair with `SET_BLOCKING_OF_NON_TEMPORARY_EVENTS(ped, true)`.",
+   "source": "shvdn-api/.../FleeAttributes.cs; menyoo Routine.cpp",
+   "file": "10-relationships-combat-squads.md",
+   "id": "flee-attribute-bitflags-fine-grained-won-t-run-control"
+  },
+  {
+   "title": "Hang the mission loop off the Tick event, never a blocking while-loop",
+   "category": "mission-loop",
+   "problem": "Run mission logic every frame without freezing the game thread.",
+   "method": "Subclass `GTA.Script`; in the constructor wire `Tick += MainLoop;` (`void MainLoop(object, EventArgs)`). SHVDN raises `Tick` every frame on the script's own thread; all per-frame work (state switch, completion checks, marker draw, re-tasking) lives there. Throttle with `Interval` (ms; 0 = every frame) \u2014 gangwar uses 500ms idle, 100ms once running. `Script.Wait(ms)`/`Yield()` yield, and ONLY from inside Tick or it throws \"Illegal call to Script.Wait outside main loop.\"",
+   "gotcha": "Tick is cooperative single-thread \u2014 a long synchronous loop inside ONE Tick stalls the whole game. Spread work across frames or `Wait`.",
+   "source": "shvdn-api/.../Shvdn/Script/Script.cs",
+   "file": "11-mission-framework.md",
+   "id": "hang-the-mission-loop-off-the-tick-event-never-a-blocking-wh"
+  },
+  {
+   "title": "Drive the mission with a stage enum and one switch per frame",
+   "category": "state-machine",
+   "problem": "Sequence multi-stage flow (Idle\u2192Briefing\u2192GoTo\u2192Combat\u2192Escape\u2192Complete/Failed) deterministically.",
+   "method": "`enum Stage { Initial=0, GoTo=1, Combat=2, Escape=3, Complete=4, Failed=5 }` + `Stage stage = Stage.Initial;`. Inside Tick, switch/gate on `stage`. Enum ordering lets `if (stage >= Stage.Running)` act as a phase test. Advance by assigning the field, doing the enter-actions (create blip, set objective text) at the moment of transition: `case Stage.GoTo: if (arrived) { blip.Delete(); SetupCombat(); stage = Stage.Combat; } break;`.",
+   "gotcha": "Give stages explicit ordered int values so `>=`/`<` phase comparisons work. Do enter-actions once at the transition, not re-run every frame.",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "11-mission-framework.md",
+   "id": "drive-the-mission-with-a-stage-enum-and-one-switch-per-frame"
+  },
+  {
+   "title": "Player-triggered transitions via KeyDown/KeyUp, separate from Tick",
+   "category": "state-machine",
+   "problem": "Let the player start/confirm stages without polling keys every frame.",
+   "method": "Wire `KeyUp += OnKeyUp;` (`void OnKeyUp(object, KeyEventArgs)`); test `e.KeyCode`. One hotkey can mean different things per `stage`. SHVDN raises `KeyDown` on press/hold, `KeyUp` on release.",
+   "gotcha": "A two-press confirm (first press \u2192 `Stage.StopKeyPressed` + \"press again\", second \u2192 tear down) is cheap insurance for destructive transitions. Keep key handlers to state changes; let Tick do continuous work.",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "11-mission-framework.md",
+   "id": "player-triggered-transitions-via-keydown-keyup-separate-from"
+  },
+  {
+   "title": "Represent an objective as a coord/entity + a GPS-route blip",
+   "category": "objective",
+   "problem": "Mark where the player must go and draw the GPS line (what `mission_sense` then reads).",
+   "method": "Coord: `Blip blip = World.CreateBlip(coord);` (ADD_BLIP_FOR_COORD) or `World.CreateBlip(coord, radius)` (radius). Entity target: `Blip blip = ped.AddBlip();` (ADD_BLIP_FOR_ENTITY \u2014 tracks it). Style: `blip.Sprite = BlipSprite.TargetA; blip.Color = BlipColor.Yellow; blip.Name = \"Objective\"; blip.ShowRoute = true;` (SET_BLIP_ROUTE = the GPS line `DOES_BLIP_HAVE_GPS_ROUTE` reports). Store the handle to `blip.Delete()` on stage exit.",
+   "gotcha": "Setting `Sprite` RESETS Color and Name \u2014 set Sprite FIRST, then color/name. One objective = one blip you own and must delete on stage exit or blips pile up. **`ShowRoute=true` is what makes `mission_sense` pick it as the routed destination.**",
+   "source": "shvdn-api/.../Blip/Blip.cs, World.cs",
+   "file": "11-mission-framework.md",
+   "id": "represent-an-objective-as-a-coord-entity-a-gps-route-blip"
+  },
+  {
+   "title": "Draw the ground marker every frame inside Tick",
+   "category": "objective",
+   "problem": "Show the 3D objective cylinder (markers are immediate-mode).",
+   "method": "`World.DrawMarker(MarkerType.VerticalCylinder, coord, Vector3.Zero, Vector3.Zero, new Vector3(1,1,1), Color.FromArgb(160,255,200,0));` (DRAW_MARKER) \u2014 call EVERY Tick while the stage is active.",
+   "gotcha": "Immediate-mode \u2014 no handle, nothing to clean up, but must be re-issued every frame, so it lives in the per-stage Tick branch, not the transition. Use alpha < 255 so it reads translucent.",
+   "source": "shvdn-api/.../World.cs",
+   "file": "11-mission-framework.md",
+   "id": "draw-the-ground-marker-every-frame-inside-tick"
+  },
+  {
+   "title": "Detect stage completion by distance, death, or count each Tick",
+   "category": "completion",
+   "problem": "Decide when a stage's objective is met and advance.",
+   "method": "In the stage's Tick branch: reached \u2192 `Game.Player.Character.Position.DistanceTo(coord) < radius` (or `World.GetDistance` = GET_DISTANCE_BETWEEN_COORDS); target killed \u2192 `targetPed.IsDead`; all enemies dead \u2192 prune a `List<Ped>` then `count==0 && counter>=quota`; area/item \u2192 distance/flag. On success: delete the stage blip, `stage = Stage.Next;`, set the next objective.",
+   "gotcha": "`World.GetDistance` (straight-line) for trigger radii; `CalculateTravelDistance` only for road-path UI. Always `ped.Exists()` before touching a tracked ped \u2014 a despawned handle is stale.",
+   "source": "gangwar/SimpleGangWar.cs, World.cs",
+   "file": "11-mission-framework.md",
+   "id": "detect-stage-completion-by-distance-death-or-count-each-tick"
+  },
+  {
+   "title": "Check fail conditions every Tick and branch to Failed",
+   "category": "fail",
+   "problem": "End the mission when the player or a protected entity is lost.",
+   "method": "Test fail predicates each Tick \u2192 `stage = Stage.Failed;`: player `Game.Player.Character.IsDead` / arrested (`IS_PLAYER_BEING_ARRESTED`); escort `escort.IsDead || !escort.Exists()`; target escaped (`DistanceTo > escapeRadius`); timer `int deadline = Game.GameTime + ms;` then `Game.GameTime > deadline`. (Gangwar saves/zeros `Game.MaxWantedLevel` so cops don't derail the scenario.)",
+   "gotcha": "Evaluate fail BEFORE completion so \"objective done but player dying\" resolves as a fail. Use `Game.GameTime` (pauses with the game), not wall-clock, for timers.",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "11-mission-framework.md",
+   "id": "check-fail-conditions-every-tick-and-branch-to-failed"
+  },
+  {
+   "title": "Track every spawned ped/vehicle/blip in lists you own",
+   "category": "entity-lifecycle",
+   "problem": "Know which world entities are yours, to manage and later destroy.",
+   "method": "`List<Ped> spawnedAllies/Enemies/deadPeds` + Blip fields. On spawn: `Ped p = World.CreatePed(model, pos); p.Weapons.Give(...); p.Health = p.MaxHealth = hp; spawnedAllies.Add(p); counter++;`. Protected entities: `SET_ENTITY_AS_MISSION_ENTITY(p, true, true)` (won't cull); gangwar uses `p.AlwaysKeepTask = true` + `MarkAsNoLongerNeeded()` for dead ones.",
+   "gotcha": "Don't mutate a list while foreach-ing \u2014 collect removals into a scratch list, then remove in a second loop. Keep total-ever counters separate from live `.Count` (quotas need total; cleanup needs alive).",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "11-mission-framework.md",
+   "id": "track-every-spawned-ped-vehicle-blip-in-lists-you-own"
+  },
+  {
+   "title": "Clean up ALL mission entities/blips on complete/fail/abort",
+   "category": "entity-lifecycle",
+   "problem": "Leave the world un-littered when the mission ends by ANY path.",
+   "method": "One `Teardown()`: restore `Interval`; `blip.Delete()` each owned blip; `foreach (Ped p in list) if (p.Exists()) p.Delete();`; `.Clear()` the lists; restore globals (`Game.MaxWantedLevel`). Call it from Complete, Failed, AND from `Aborted += OnAborted;` \u2014 SHVDN raises `Aborted` on unload/reload specifically for cleanup.",
+   "gotcha": "**You MUST wire `Aborted`** \u2014 if you only clean up on Complete/Fail, a mid-mission script reload orphans every ped + blip permanently. Guard deletes with `Exists()`.",
+   "source": "gangwar/SimpleGangWar.cs, Script.cs",
+   "file": "11-mission-framework.md",
+   "id": "clean-up-all-mission-entities-blips-on-complete-fail-abort"
+  },
+  {
+   "title": "Reward on complete, notify and reset on fail",
+   "category": "reward",
+   "problem": "Close the loop with feedback + payout.",
+   "method": "Complete: `Game.Player.Money += reward;` + `GTA.UI.Notification.Show(\"Mission complete! $\"+reward);`. Failed: `GTA.UI.Notification.Show(\"~r~Mission failed\");`. Either way `Teardown()` + `stage = Stage.Initial;` to re-arm. Stage prompts via `GTA.UI.Screen.ShowHelpText(...)` / `ShowSubtitle(...)`; color codes `~r~`/`~g~`/`~y~`.",
+   "gotcha": "Funnel BOTH Complete and Failed through the same teardown+reset so the mission replays cleanly; a fail path that skips cleanup corrupts the next run.",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "11-mission-framework.md",
+   "id": "reward-on-complete-notify-and-reset-on-fail"
+  },
+  {
+   "title": "Keep the scene alive: re-task idle peds and top up waves each Tick",
+   "category": "mission-loop",
+   "problem": "Spawned actors go idle (finish a task / lose their target); the encounter must self-sustain.",
+   "method": "Each Tick (gated on the running stage): per team (1) spawn up to a cap with an anti-flood check (`World.GetNearbyPeds(spawnpoint, dist)` counting alive members); (2) iterate the list \u2014 if `ped.IsDead` delete its blip + queue removal + `MarkAsNoLongerNeeded()`; else if `ped.IsIdle && !ped.IsRunning` re-task: `ped.Task.RunTo(target)` / `ped.Task.FightAgainstHatedTargets(range)`. Tune with `SET_PED_COMBAT_ATTRIBUTES ped 46 true`, `SET_PED_SEEING_RANGE`.",
+   "gotcha": "Peds silently stop fighting once their target dies \u2014 poll `IsIdle`/`IsRunning` every Tick and re-task or the scene freezes. `ClearAllImmediately()` + `AlwaysKeepTask = true` right after spawn makes the re-task stick. (This is the C# mirror of PATTERNS/09's make-tasks-stick.)",
+   "source": "gangwar/SimpleGangWar.cs",
+   "file": "11-mission-framework.md",
+   "id": "keep-the-scene-alive-re-task-idle-peds-and-top-up-waves-each"
+  },
+  {
+   "title": "Structure: one Script + onTick running PARALLEL int state machines (no enums)",
+   "category": "mission-scaffold",
+   "problem": "Run a long multi-objective heist without coroutines/enums.",
+   "method": "`public class XHeist : Script`; constructor only wires `Tick += onTick` (+ `KeyDown` sometimes); no `Interval` (every frame). All logic in one `onTick`. The state is plain `int` fields (`mai`, `nrob`, `tii`, `casinoindex`, `keyindex`) each driven by its own `switch`, all running every frame; a master counter is the spine, secondary counters run sub-branches in parallel. Cross-machine handoff = one machine sets another's index/flag (`keyactive=true; keyindex=0;`). AND-gates use bools (`if (key1 && key2)` before the finale). `index = -1` = disable that machine.",
+   "gotcha": "Stage numbers are non-contiguous (0\u219210\u219220, branch islands like 1011) and fields are overloaded \u2014 **follow the `x = <next>` assignments, not case order.** No enums = machine-named ints make order opaque; the transition function often owns the jump (e.g. `entern()` sets `mai=2`).",
+   "source": "all M8T mods (lombank/uptown/stashhouse/gta6/casino/nightclubs)",
+   "file": "12-m8t-heist-framework.md",
+   "id": "structure-one-script-ontick-running-parallel-int-state-machi"
+  },
+  {
+   "title": "Objective blip: sprite + COLOUR-AS-STATE + ShowRoute (what a sensor reads) \u2b50",
+   "category": "objective-blip",
+   "problem": "Mark the current objective and encode its state in the blip.",
+   "method": "Shared `spawnblip(Vector3 pos, string name, int sprite, BlipColor color, bool shortrange, bool showroute, bool addtolist, List<Blip> list)` \u2192 `World.CreateBlip`, set Sprite/Color/Name, `ShowRoute=showroute`, add to a tracked `List<Blip>`. Conventions: **start/hub** blips use custom sprites (Uptown 500, Casino 431, Nightclub 93) + colour 50/53; **in-mission objective** blips are tiny `sprite 1` whose **COLOUR signals state**: `0` white = pending/not-yet-active, `2` = attack/destroy-this-now (+`IsShortRange=false` so it shows at any range), `66` = escape/deliver waypoint. `ShowRoute=true` (or a `waypoint:true` overload) draws the GPS line.",
+   "gotcha": "**Setting `Sprite` RESETS Color and Name** \u2014 set Sprite first. **Read `Blip.Color` not just existence** \u2014 colour is the objective's state. `ShowRoute=true` is the exact `DOES_BLIP_HAVE_GPS_ROUTE` signal `mission_sense` keys on. Blip names are literal strings, never GXT.",
+   "source": "uptown/lombank/stashhouse spawnblip; colours uptown L2347-2463, lombank L885-1198",
+   "file": "12-m8t-heist-framework.md",
+   "id": "objective-blip-sprite-colour-as-state-showroute-what-a-senso"
+  },
+  {
+   "title": "Ground marker + proximity + context key for every interaction/trigger",
+   "category": "trigger",
+   "problem": "Let the player trigger a step (start mission, enter, grab) by standing in a spot.",
+   "method": "Every interactable draws a cylinder each tick + distance-checks: `World.DrawMarker((MarkerType)1, pos, Vector3.Zero, Vector3.Zero, new Vector3(0.5f,0.5f,0.5f), Color.FromArgb(30,144,255))` (DodgerBlue), then `if (player.Position.DistanceTo(pos) < 1.5f) { DisplayHelp(\"Press ~INPUT_CONTEXT~ to \u2026\"); if (Game.IsControlJustPressed(2, (Control)51)) <do> }`. `(Control)51` = INPUT_CONTEXT (E). Coarse approach gates use ~17\u201390 m; context actions ~1.5\u20131.8 m.",
+   "gotcha": "Marker is drawn unconditionally; the help prompt + key check live INSIDE the distance test. Markers are immediate-mode \u2014 re-draw every frame. Mission START is just a trigger blip + this marker/distance/key (no menu, no phone). The \"keyboard\" build swaps `Game.IsKeyPressed(Keys.E)`.",
+   "source": "casino casinoindex case 0 L1613; stashhouse L1116-1135; gta6 L1546",
+   "file": "12-m8t-heist-framework.md",
+   "id": "ground-marker-proximity-context-key-for-every-interaction-tr"
+  },
+  {
+   "title": "Objective TEXT: long-duration ShowSubtitle (colour-coded) + the help-text native chain",
+   "category": "objective-text",
+   "problem": "Keep the current objective on screen + show contextual key prompts.",
+   "method": "Two channels, both LITERAL strings (never GXT): (1) Persistent objective = `UI.ShowSubtitle(\"Shoot the main ~g~gate lock.\", 100000)` / `\"Drill the ~g~door lock.\"` / `\"Grab the ~g~loot.\"` / `\"Kill the ~r~Security.\"` / `\"Leave the ~y~bank.\"` / `\"Lose the cops.\"` / `\"~g~Heist passed.\"` \u2014 re-issued every tick with an absurd duration so it sticks. (2) Context prompt via the help chain: `BEGIN_TEXT_COMMAND_DISPLAY_HELP(\"STRING\")` \u2192 `ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME(text)` \u2192 `END_TEXT_COMMAND_DISPLAY_HELP(0,0,1,-1)` \u2014 e.g. \"Press ~INPUT_CONTEXT~ to enter the bank.\", \"Hold ~INPUT_ENTER~ to blow the vault.\".",
+   "gotcha": "**Colour tags carry semantic meaning a sensor could parse:** `~g~`=loot/objective-target, `~y~`=location, `~r~`=enemy, `~b~`=teller, `~m~`=coke, `~p~`=diamonds, `~w~`=white. No dedicated objective native \u2014 it's just a long subtitle, so it must be re-called each tick or it's overwritten. **Objective text is NOT readable back via natives** (set-only) \u2014 a sensor gets it from the blip, not the text.",
+   "source": "all mods; help wrapper DisplayexitDCHstarthelp; subtitle strings uptown/casino/nightclubs",
+   "file": "12-m8t-heist-framework.md",
+   "id": "objective-text-long-duration-showsubtitle-colour-coded-the-h"
+  },
+  {
+   "title": "Completion tests: distance, anim-phase>0.99, IsDead, WantedLevel==0, loot count",
+   "category": "completion",
+   "problem": "Decide when a stage is done.",
+   "method": "Per-stage predicate in onTick: reached \u2192 `player.Position.DistanceTo(pos) < 1.5f`; left area \u2192 `> 100f`; scripted beat done \u2192 `GET_SYNCHRONIZED_SCENE_PHASE(sc) > 0.99f` or `GET_ENTITY_ANIM_CURRENT_TIME(...) > 0.99f`; target killed \u2192 `((Entity)ped).IsDead`; loot done \u2192 `lootcollected == N`; heist \"passed\" \u2192 `WantedLevel == 0` after looting + left area. On success: delete that blip, set the next index.",
+   "gotcha": "**\"Heist passed\" needs BOTH leaving the area AND `WantedLevel==0`.** `GET_SYNCHRONIZED_SCENE_PHASE > 0.99` is THE canonical \"is this scripted beat finished\" gate the nested machine hangs on. Player is set `IsInvincible=true` during scripted anims so they can't fail mid-beat.",
+   "source": "stashhouse L1092-1491; uptown L2496-2651; nightclubs tl1i L2333",
+   "file": "12-m8t-heist-framework.md",
+   "id": "completion-tests-distance-anim-phase-0-99-isdead-wantedlevel"
+  },
+  {
+   "title": "Timer beats with Game.GameTime (the \"5 minutes or cops\" mechanic)",
+   "category": "fail",
+   "problem": "Time-limit a stage and react if it expires.",
+   "method": "Stamp a deadline `int deadline = Game.GameTime + ms;` then each tick `if (Game.GameTime > deadline) <react>` \u2014 e.g. raise wanted: `Game.Player.WantedLevel = N;` (M8T force-sets `Game.Player.WantedLevel = wnt` to script cop response). `Game.GameTime` is the engine ms clock (pauses with the game). GTA6 reuses int fields as both stage and timestamp (`iint = Game.GameTime + 30000`).",
+   "gotcha": "Use `Game.GameTime`, NOT wall-clock. M8T scripts the cop response by directly setting WantedLevel (and saves/restores `Game.MaxWantedLevel`/a `wantsave` field so cops don't derail other stages). This card is the literal mechanic for \"5 minutes to get out or cops are called.\"",
+   "source": "gta6 wantsave/iint L1419-1438; uptown wnt; stashhouse wanted handling",
+   "file": "12-m8t-heist-framework.md",
+   "id": "timer-beats-with-game-gametime-the-5-minutes-or-cops-mechani"
+  },
+  {
+   "title": "Fail = death \u2192 inline cleanup \u2192 reset (NO Aborted handler \u2014 a flaw to fix)",
+   "category": "fail",
+   "problem": "What happens on death / abandon.",
+   "method": "No \"Mission Failed\" stage. Top of onTick: `if (mai > 1 && Game.Player.Character.IsDead) { Script.Wait(3000); clearall(); init=true; mai=1; }` \u2014 tears down spawned entities, rewinds to the hub. \"Lose the cops\" is a STALL state (`while WantedLevel != 0` keep printing the subtitle), not a fail.",
+   "gotcha": "**None of the M8T mods wire `Script.Aborted`** \u2014 so reloading the script mid-heist while alive LEAKS every prop/ped/blip permanently. PATTERNS/11 has the fix (wire Aborted \u2192 Teardown); our own mission runner MUST do this.",
+   "source": "all mods (death handler at onTick top)",
+   "file": "12-m8t-heist-framework.md",
+   "id": "fail-death-inline-cleanup-reset-no-aborted-handler-a-flaw-to"
+  },
+  {
+   "title": "Cutscene beats: fade+teleport+wait, or native REQUEST_CUTSCENE / SYNCHRONIZED_SCENE",
+   "category": "cutscene",
+   "problem": "Cinematic cuts and scripted story/loot animations.",
+   "method": "(a) Cheap cut (no free-cam): `Game.Player.CanControlCharacter=false; Game.FadeScreenOut(1000); Wait(1000); SET_ENTITY_COORDS_NO_OFFSET(...); Wait(1000); Game.FadeScreenIn(1000); CanControlCharacter=true;`. (b) Real R* cutscene: `REQUEST_CUTSCENE(\"xm4_rob_cas_mcs1\", 8)` \u2192 bind peds `SET_CUTSCENE_PED...(ped,\"MP_1\")` \u2192 `START_CUTSCENE(0)` \u2192 poll `IS_CUTSCENE_ACTIVE` for done (save/restore outfit, delete cs-only peds). (c) Loot anim: `REQUEST_ANIM_DICT` \u2192 `CREATE_SYNCHRONIZED_SCENE` \u2192 `TASK_SYNCHRONIZED_SCENE`(ped) + `PLAY_SYNCHRONIZED_ENTITY_ANIM`(prop) \u2192 advance on `GET_SYNCHRONIZED_SCENE_PHASE > 0.99`. Interior via `REQUEST_IPL(\"vw_casino_main\")`.",
+   "gotcha": "No M8T mod uses scripted free-cameras \u2014 cuts are fade+teleport. During beats they re-assert `DisableControlThisFrame` (sprint 21/attack 24/257) every frame + `IsInvincible`. A \"spam to speed up\" loot mechanic bumps `SET_SYNCHRONIZED_SCENE_RATE` per `IsControlJustPressed(223)`. (These beats are what a reflex agent can't do \u2014 the gap.)",
+   "source": "casino L955-976; gta6 cutscene L2381-2404; nightclubs SYNCHRONIZED_SCENE L1355-2333",
+   "file": "12-m8t-heist-framework.md",
+   "id": "cutscene-beats-fade-teleport-wait-or-native-request-cutscene"
+  },
+  {
+   "title": "Reward: accumulate totaltake \u2192 pay once on clean getaway",
+   "category": "reward",
+   "problem": "Pay only after a successful escape, with randomized loot value.",
+   "method": "`int totaltake` accumulates per grab (randomized via `GET_RANDOM_INT_IN_RANGE` tiers, e.g. Cash +5257 / Gold +14257 / Cocaine +9557), then ONE payout at the terminal stage when `WantedLevel==0` + player alive + left area: `Game.Player.Money += totaltake; UI.ShowSubtitle(\"~g~Heist passed.\", 11000); clearheist();`. Casino is a flat `Money += 5250000` at the buyer. Loot grab plays `PLAY_SOUND_FRONTEND(-1, \"ROBBERY_MONEY_TOTAL\", \"HUD_FRONTEND_CUSTOM_SOUNDSET\", 1)`.",
+   "gotcha": "Money is a lump at the end \u2014 dying after looting but before `WantedLevel==0` forfeits everything (`totaltake` resets to 0 on re-entry). Casino loot grabs are cosmetic; the whole payout is hardcoded at the buyer.",
+   "source": "uptown totaltake L1558-2152, payout L2646; casino L1038; nightclubs L1252",
+   "file": "12-m8t-heist-framework.md",
+   "id": "reward-accumulate-totaltake-pay-once-on-clean-getaway"
+  },
+  {
+   "title": "Entity tracking Lists + clear*() teardown (the cleanup contract)",
+   "category": "cleanup",
+   "problem": "Remove every spawned prop/ped/vehicle/blip on reset/complete.",
+   "method": "Everything spawned goes into typed `List<>` fields (`proplist`, `pedlist`, `coppeds`, `vehlist`, `objblips`, `lootlist`) via `spawn*tolist(..., list)` helpers. Teardown family `clearpeds()/clearblips()/clearcars()/clearinterior()/clearheist()/clearall()` iterate: `if (DOES_ENTITY_EXIST(item)) ((Entity)item).Delete();`, `if (DOES_BLIP_EXIST(b)) b.Remove();`, then `list.Clear()`. Persistent map markers + `permlist` exterior props are excluded so they survive resets.",
+   "gotcha": "Funnel complete AND fail through the same `clearall()`. Exclude the hub/start blip from `objblips` so it survives. (And wire `Aborted` \u2014 which M8T didn't.)",
+   "source": "uptown clear* L4913-5198; stashhouse clearall L2684",
+   "file": "12-m8t-heist-framework.md",
+   "id": "entity-tracking-lists-clear-teardown-the-cleanup-contract"
+  },
+  {
+   "title": "Mission selection: walk-in trigger blips, no menu (the open-world hub)",
+   "category": "mission-select",
+   "problem": "Offer multiple missions without a UI menu.",
+   "method": "Each mission = named world blips scattered on the map; a shared idle hub state (`mai=1`). Multiple missions run independent `switch(mai)`/`switch(mai2)` in the same tick, all sharing the `mai=1` hub. The \"selected\" mission is simply whichever trigger marker the player walks into and confirms with E. No NativeUI/LemonUI/phone anywhere.",
+   "gotcha": "Two state machines sharing one idle value is the dispatch trick \u2014 there's no \"selected mission\" variable. The death/cleanup handler gates on `mai > 1` so it only fires when a mission is actually active.",
+   "source": "nightclubs switch mai L1179 + mai2 L1823",
+   "file": "12-m8t-heist-framework.md",
+   "id": "mission-selection-walk-in-trigger-blips-no-menu-the-open-wor"
+  },
+  {
+   "title": "The \"framework\" is copy-pasted helpers (no base class) \u2014 name them",
+   "category": "shared-base",
+   "problem": "What's the reusable scaffold to mirror when authoring a mission.",
+   "method": "No common base class \u2014 M8T duplicates the same helpers in every mod: `spawnblip(...)`, `spawnproptolist(rdr)(...)`, `spawnpedtolist(...)`, `entern(pos,hed)`/`tp(...)` (fade+IPL+teleport into the interior, sets the next stage), `DisplayexitDCHstarthelp(string)` (help-text wrapper), and the `clear*()` teardown family. Settings persist via a P/Invoke `IniFile` (`scripts\\\\X.ini`) for loot type / blip id; progress is all in-memory (no save-game).",
+   "gotcha": "This is the exact set of operations our mission runner needs: set objective blip+marker+text, spawn tracked entities, detect completion, advance, clean up. We can do all of it through the bridge (blips/markers/spawn/wanted natives + world_sense/mission_sense for completion).",
+   "source": "all M8T mods",
+   "file": "12-m8t-heist-framework.md",
+   "id": "the-framework-is-copy-pasted-helpers-no-base-class-name-them"
+  },
+  {
+   "title": "Synchronized scene = M8T's universal \"animation at a location\" anchor \u2b50",
+   "category": "animation-scene",
+   "problem": "Play a ped animation exactly AT a world spot (vault, keypad, cash table) without manual teleport/heading fiddling.",
+   "method": "`scene = CREATE_SYNCHRONIZED_SCENE(x, y, z, 0f, 0f, rotZ, 2)` (rotOrder=2) at the target prop's position/rotation \u2192 `TASK_SYNCHRONIZED_SCENE(ped, scene, dict, clip, 4f, -15f, 3341, 16, 1148846080, 0)` (blendIn 4, blendOut -15; those magic ints are the house flag combo) \u2192 poll `GET_SYNCHRONIZED_SCENE_PHASE(scene) > 0.99f` to detect \"beat finished\" \u2192 next stage. Speed control mid-anim: `SET_SYNCHRONIZED_SCENE_RATE(scene, 0.5f..0.7f)`. The anim system pulls the ped into place \u2014 no SET_ENTITY_COORDS needed.",
+   "gotcha": "\u26a0 The decompile shows only bare hashes \u2014 this IS the synchronized-scene API (CREATE=0x8C18E0F9080ADD73, TASK=0xEEA929141F699854, PHASE=0xE4A310B1D7FA73CC); don't mistake it for TASK_PLAY_ANIM_ADVANCED. One scene per ped (never shared). Phase test is `> 0.99f`, never `== 1.0`. Disable `Game.Player.CanControlCharacter` (+ often `IsInvincible=true`) during the beat, restore after. REQUEST_ANIM_DICT first; M8T never unloads dicts.",
+   "source": "casinoheist L19350-19410 (thermal); drughideoutheist L549-1100 (loot); uniondepository L2358-2680 (drill); 80+ sites corpus-wide",
+   "file": "14-m8t-deep-dive.md",
+   "id": "synchronized-scene-m8t-s-universal-animation-at-a-location-a"
+  },
+  {
+   "title": "Props join the ped's scene via PLAY_SYNCHRONIZED_ENTITY_ANIM (drill/bag/thermite)",
+   "category": "animation-scene",
+   "problem": "A drill/bag/thermite prop must move in lockstep with the ped's animation.",
+   "method": "Spawn the prop (`World.CreateProp`, often `HasCollision=false`), then `PLAY_SYNCHRONIZED_ENTITY_ANIM(prop, scene, \"<phase>_<prop_model_name>\", dict, 1f, -1f, 0, 1148846080)` using the SAME scene handle as the ped's TASK_SYNCHRONIZED_SCENE. The clip name encodes phase+prop: `enter_ch_prop_vault_drill_01a`, `action_ch_prop_vault_drill_01a`, `thermal_charge_male_hei_prop_heist_thermite`, `enter_p_m_bag_var22_arm_s` \u2014 R* ships a per-prop clip inside the same anim dict. Casino's thermal beat runs ped + bag + thermite as 3 calls on one scene.",
+   "gotcha": "\u26a0 The string arg is a CLIP NAME in the dict, not a bone (decompile order makes it look like ATTACH_ENTITY_TO_ENTITY \u2014 it isn't; that native (0x6B9BBD38AB0796DF) appears separately, e.g. phone\u2192hand bone 28422). Re-issue the prop anim at each phase change alongside the ped's. Props are deleted at beat end, not detached.",
+   "source": "uniondepository L2490-2530; casinoheist L19364-19403; harvestandtrustee L5579-5638",
+   "file": "14-m8t-deep-dive.md",
+   "id": "props-join-the-ped-s-scene-via-play-synchronized-entity-anim"
+  },
+  {
+   "title": "The loot-grab sub-FSM: enter \u2192 mash-to-grab loop \u2192 bag transfer \u2192 exit",
+   "category": "loot",
+   "problem": "The GTA-O style \"stuff cash into a bag\" interaction with player-paced progress.",
+   "method": "Own int sub-machine (states 30\u219240\u219250\u219260\u219290\u2192100): spawn bag prop + scene at the cash prop \u2192 `enter` clip \u2192 phase>0.99 \u2192 `grab` clip at `SET_SYNCHRONIZED_SCENE_RATE 0.5`; each `INPUT_SCRIPT_RDOWN` (Control 223) tap bumps the rate to 0.7 (mash = faster); when phase>0.99 AND the hand-cash prop is within range of the bag prop \u2192 `totaltake += amount` (per-loot-type: cash 5257, coke 9778...), `PLAY_SOUND_FRONTEND(-1, \"ROBBERY_MONEY_TOTAL\", \"HUD_FRONTEND_CUSTOM_SOUNDSET\", 1)` \u2192 `exit` clip \u2192 delete cash/bag/hand props, `lootcollected++`. Payout at mission end is simply `Game.Player.Money += totaltake` once wanted==0.",
+   "gotcha": "Money is granted ONCE on clean escape, never per grab \u2014 the during-heist number is UI only. The bag-proximity test is what confirms a grab \"landed\". Re-equip the visual backpack after (component variation card below).",
+   "source": "drughideoutheist L549-1289; uniondepository L6846-7443; casinoheist L15545+",
+   "file": "14-m8t-deep-dive.md",
+   "id": "the-loot-grab-sub-fsm-enter-mash-to-grab-loop-bag-transfer-e"
+  },
+  {
+   "title": "The TAKE counter HUD: UIText + \"timerbars\" texture sprite (not scaleform)",
+   "category": "hud",
+   "problem": "Show the running \"TAKE $X\" loot counter like GTA:O.",
+   "method": "`REQUEST_STREAMED_TEXTURE_DICT(\"timerbars\")` \u2192 once `HAS_STREAMED_TEXTURE_DICT_LOADED` \u2192 `DRAW_SPRITE(\"timerbars\", \"all_black_bg\", x\u22480.21, y\u22480.04, w, h, rot, r,g,b,a)` per frame as the backdrop, with `new UIText(\"TAKE\", Point(1100,689), 0.4f, ...)` + a money UIText drawn over it. Flash feedback: keep `colorcash=\"~w~\"`, on take increase set `\"~g~\"` + GameTime stamp, revert after 500ms.",
+   "gotcha": "\u26a0 It's a streamed TEXTURE DICT + DRAW_SPRITE (0xE7FFAE5EBF23D890), not the timerbars scaleform. Pixel Points assume 1280x720-normalized UI; per-frame draws.",
+   "source": "islandtempleheist L2637-2863; drughideoutheist L1169-1289",
+   "file": "14-m8t-deep-dive.md",
+   "id": "the-take-counter-hud-uitext-timerbars-texture-sprite-not-sca"
+  },
+  {
+   "title": "Open any DLC/heist interior: REQUEST_IPL + interior id + entity sets",
+   "category": "interior",
+   "problem": "Make a bank vault/casino/lab interior exist and configure its props.",
+   "method": "`REQUEST_IPL(\"<name>\")` for each piece (often several: base + `hi@` high-LOD variants; see appendix table) early in setup \u2192 `id = GET_INTERIOR_AT_COORDS(x,y,z)` \u2192 toggle props with `ACTIVATE_INTERIOR_ENTITY_SET(id, \"<set>\")` / `DEACTIVATE_INTERIOR_ENTITY_SET(id, \"<set>\")` (vault layouts `SET_BASE_VAULT_00..09`, blockers `SET_ACCESS_BLOCKER`, decor, `SET_VAULT_DOOR_OPEN/CLOSED`...). Casino flips hundreds of sets to configure one space. `REMOVE_IPL` on cleanup for swapped worlds (North Yankton).",
+   "gotcha": "IPL load is async \u2014 do it a stage before you need it. Entity sets are per-interior-id; unknown set names silently no-op. \u26a0 Hash 0x420BD37289EEE162 in decompiles is DEACTIVATE_INTERIOR_ENTITY_SET (ACTIVATE is 0x55E86AF2712B36A1) \u2014 check which polarity a harvested snippet actually calls.",
+   "source": "vicesmugglingheists L3112-3166; uniondepository L4134, L14998; casinoheist L55300+; asafehouse L1444-1450",
+   "file": "14-m8t-deep-dive.md",
+   "id": "open-any-dlc-heist-interior-request-ipl-interior-id-entity-s"
+  },
+  {
+   "title": "Enter interiors/swapped worlds: fade \u2192 teleport \u2192 restore control \u2192 fade in",
+   "category": "interior",
+   "problem": "Move the player into an interior (or North Yankton) without streaming pop or falling through.",
+   "method": "`Game.FadeScreenOut(1000); Script.Wait(1000);` \u2192 set player Position to the interior coords \u2192 activate entity sets / freeze door props \u2192 `Task.ClearAll()`, `HasCollision=true`, `CanControlCharacter=true` \u2192 `Script.Wait(1000); Game.FadeScreenIn(1000);`. North Yankton = same pattern after loading the `prologue01*` IPL family (it's a world swap, not an interior; coords like (3217..., -4834..., 111) / interiors often negative-Z e.g. -1325, 150, -100).",
+   "gotcha": "Collision loads with the IPL \u2014 M8T never calls REQUEST_COLLISION_AT_COORD; the 1s post-teleport wait IS the streaming buffer. Always re-assert HasCollision + control after.",
+   "source": "uniondepository L4173-4186; northyanktonjewelry L453, L7442",
+   "file": "14-m8t-deep-dive.md",
+   "id": "enter-interiors-swapped-worlds-fade-teleport-restore-control"
+  },
+  {
+   "title": "Doors/vaults are PROPS: find nearby, freeze to lock, unfreeze+rotate to open",
+   "category": "doors",
+   "problem": "Lock a bank door until the heist says so; swing a vault door open.",
+   "method": "No DOOR_SYSTEM anywhere in 35 mods. Instead: `World.GetNearbyProps(coord, 1-3f, new Model(\"v_ilev_fin_vaultdoor\"))` \u2192 match \u2192 `FreezePosition = true` (locked). To open: `FreezePosition=false` then set `Heading`/`Rotation.Z` \u2014 ramp the angle over ticks for a swing (`vdoorprop.Rotation = new Vector3(0,0,rotars)` with rotars increasing). Double doors/gates = L/R model pair rotated opposite. Blown/cut doors = `DOES_ENTITY_EXIST` check \u2192 `Delete()` (optionally swap in a broken variant prop). 40+ door models in the appendix.",
+   "gotcha": "The map's own door props can be grabbed this way \u2014 you don't spawn doors, you FIND them. Freeze, don't delete, for \"locked\" (delete is irreversible). Existence-check (0x7239B21A38F536BA DOES_ENTITY_EXIST) before every touch.",
+   "source": "casinoheist L10365-10407, L11102; northyanktonjewelry L2257-2301, L5140; uniondepository L4157",
+   "file": "14-m8t-deep-dive.md",
+   "id": "doors-vaults-are-props-find-nearby-freeze-to-lock-unfreeze-r"
+  },
+  {
+   "title": "Custom voice lines: ship .wav files + System.Media.SoundPlayer from scripts\\",
+   "category": "voice",
+   "problem": "Heists need narrative voice lines GTA doesn't have.",
+   "method": "Ship wavs in `scripts\\<ModName>\\*.wav` (the corpus ships ~108). Class-level `SoundPlayer`; at a mission beat: `soundPlayer.SoundLocation = \"scripts\\\\DepositBankHeists\\\\tellopen1.wav\"; soundPlayer.Play();`. Triggering is purely stage-driven (state machine cases), sequencing by GameTime delays / next-beat gates \u2014 no overlap detection.",
+   "gotcha": "`.Play()` is fire-and-forget (background thread) \u2014 pacing comes from the state machine, so a skipped stage can talk over a previous line. WAV format only (PCM); relative paths resolve from GTAV root. For OUR runner the equivalent is the ClaudeRadio/NAudio path or `hud_message` + frontend sound.",
+   "source": "islandtempleheist L1420; depositbankheists L2250; asafehouse L3204; ballasheist L2988",
+   "file": "14-m8t-deep-dive.md",
+   "id": "custom-voice-lines-ship-wav-files-system-media-soundplayer-f"
+  },
+  {
+   "title": "In-engine ped speech + CB-radio framing (PLAY_PED_AMBIENT_SPEECH_WITH_VOICE_NATIVE)",
+   "category": "voice",
+   "problem": "Make a ped audibly speak R* lines (Lester briefings, guard barks) with radio framing.",
+   "method": "`REQUEST_SCRIPT_AUDIO_BANK(\"CB_RADIO_SFX\", 1)` \u2192 squelch in: `PLAY_SOUND_FRONTEND(-1, \"Start_Squelch\", \"CB_RADIO_SFX\", 1)` \u2192 `PLAY_PED_AMBIENT_SPEECH_WITH_VOICE_NATIVE(ped, \"hs3f_jpaa\", \"lester\", \"SPEECH_PARAMS_FORCE_FRONTEND\", false)` \u2192 poll `IS_AMBIENT_SPEECH_PLAYING(ped)` until done \u2192 squelch out / next line. Param strings: `SPEECH_PARAMS_FORCE_FRONTEND` (full volume anywhere), `SPEECH_PARAMS_FORCE_SHOUTED_CLEAR`.",
+   "gotcha": "Speech contexts are R* dialogue ids (`hs3f_*` = casino-heist finale lines) \u2014 they only exist for shipped dialogue; browse with gtadata audio tools before assuming. Poll IS_AMBIENT_SPEECH_PLAYING or lines overlap. Bank must be requested first.",
+   "source": "casinoheist L9220-9260, L9515-9612; bobcat L4035",
+   "file": "14-m8t-deep-dive.md",
+   "id": "in-engine-ped-speech-cb-radio-framing-play-ped-ambient-speec"
+  },
+  {
+   "title": "Heist mood music + sound beats: TRIGGER_MUSIC_EVENT / audio banks / entity loops",
+   "category": "audio",
+   "problem": "Score the heist phases like R* does (tension \u2192 action \u2192 escape).",
+   "method": "Phase transitions fire `TRIGGER_MUSIC_EVENT(\"<event>\")` \u2014 the HEI4_FIN_* suite maps to mission moods: `_SUSPENSE_LOW/HIGH` (stealth), `_ACTION`/`_ACTION_MD` (combat), `_SAFE_ROOM`, `_DRIVING_MD` (escape), `_STOP_MUSIC` (end); also `MP_MC_ACTION`, `MP_MC_START_HEIST_4`. One-shot SFX: `REQUEST_SCRIPT_AUDIO_BANK(\"DLC_HEIST_FLEECA_SOUNDSET\"...)` then `PLAY_SOUND_FRONTEND` / looped tool noise via `PLAY_SOUND_FROM_ENTITY(0, \"Drill\", drillProp, \"DLC_HEIST_FLEECA_SOUNDSET\", 1, 0)`.",
+   "gotcha": "Music events are fire-and-forget state pushes \u2014 always fire the matching STOP on pass/fail/cleanup or the score keeps playing forever. Looped entity sounds also need an explicit stop. Bank before sound, every time.",
+   "source": "asafehouse L1424-2169 (full HEI4 suite); betta L2579, L10475; gta6 L2451; harvestandtrustee L2870",
+   "file": "14-m8t-deep-dive.md",
+   "id": "heist-mood-music-sound-beats-trigger-music-event-audio-banks"
+  },
+  {
+   "title": "Enemy/guard stack: validate \u2192 arm \u2192 relationship-hate \u2192 task (no combat-attribute natives)",
+   "category": "enemies",
+   "problem": "Spawn guards that patrol, then fight; hostages that comply; allies that don't get shot.",
+   "method": "Model.Request(10000) + IsLoaded wait \u2192 `World.CreatePed(model, pos, heading)` \u2192 loop `DOES_ENTITY_EXIST` until live \u2192 `Weapons.Give(hash, 999, equip, true)` \u2192 `World.AddRelationshipGroup(\"m8tgardscum4\")` once, `ped.RelationshipGroup = Game.GenerateHash(\"m8tgardscum4\")`, `World.SetRelationshipBetweenGroups((Relationship)5, group, playerGroup)` (5=hate/attack-on-sight; 0=ally; set BOTH directions for guard-vs-ally wars). Behavior is pure tasks: idle `Task.WanderAround(pos, 20f)`; combat trigger `Task.FightAgainst(player)` + `Task.ShootAt(player)` per ped in the list; menace `Task.AimAt(ent, -1)`; hostages `Task.HandsUp(-1)`/`Task.Cower(-1)`; `Task.LeaveVehicle()` before fighting from cars. Track every ped in Lists; death loop removes blips (`CurrentBlip.Remove()`); cleanup deletes all.",
+   "gotcha": "NO SET_PED_COMBAT_ATTRIBUTES / accuracy / vision-cone natives in 35 mods \u2014 escalation is tasks + relationship 5 + direct `Game.Player.WantedLevel = N`. Stealth detection is event-driven only: `ped.IsShooting`, `player.IsShooting` (+ `IS_PED_CURRENT_WEAPON_SILENCED` exemption), wanted>0. HandsUp/Cower need `Task.ClearAll()` before re-tasking.",
+   "source": "depositbankheists L5617-5636, L2919; islandtempleheist L1171-1334; bobcat L4527-4548; bailenforcement L939",
+   "file": "14-m8t-deep-dive.md",
+   "id": "enemy-guard-stack-validate-arm-relationship-hate-task-no-com"
+  },
+  {
+   "title": "Heist outfit/bag via SET_PED_COMPONENT_VARIATION (story vs freemode slots differ)",
+   "category": "player-setup",
+   "problem": "Put the duffel bag / heist gear on the player, and take it off.",
+   "method": "Freemode/other models: `SET_PED_COMPONENT_VARIATION(ped, 5, 45, 0, 2)` (slot 5 = hands/parachute-bag, variation 45 = duffel; 0 to remove). Story protagonists (player_zero/one/two): slot 9 (tasks/decal), variation 1 / 0. Wrapped as `eqbag(on)` and re-applied after scene beats (anims can clear the visual).",
+   "gotcha": "Slot/variation ids differ per model family \u2014 branch on `player.Model` like M8T does. Re-equip after each loot beat.",
+   "source": "drughideoutheist L1357-1389",
+   "file": "14-m8t-deep-dive.md",
+   "id": "heist-outfit-bag-via-set-ped-component-variation-story-vs-fr"
+  },
+  {
+   "title": "Mission-passed shard banner: MP_BIG_MESSAGE_FREEMODE scaleform",
+   "category": "hud",
+   "problem": "The big \"HEIST PASSED / $324,221\" center-screen banner.",
+   "method": "`new Scaleform(\"MP_BIG_MESSAGE_FREEMODE\")` \u2192 poll `HAS_SCALEFORM_MOVIE_LOADED(handle)` (\u22641s) \u2192 `CallFunction(\"SHOW_SHARD_CREW_RANKUP_MP_MESSAGE\", title, subtitle)` (e.g. \"~y~Bobcat Security Heist Success\", \"Money earned $324221\") \u2192 `Render2D()` EVERY frame for the display window (~5s timer). Variant: `CallFunction(\"SHOW_MISSION_PASSED_MESSAGE\", msg, \"TESTING\", 5000, true, 0, true)`.",
+   "gotcha": "Render2D is immediate-mode \u2014 stop calling it and the shard vanishes; M8T runs a timer field counting it down. Load-poll before first CallFunction or it silently no-ops.",
+   "source": "bobcat L11811-11841, L8641; humane-labs L8125",
+   "file": "14-m8t-deep-dive.md",
+   "id": "mission-passed-shard-banner-mp-big-message-freemode-scalefor"
+  },
+  {
+   "title": "Thermite burn / heist FX: START_PARTICLE_FX_LOOPED_AT_COORD",
+   "category": "ptfx",
+   "problem": "The burning-thermite visual on a vault door.",
+   "method": "After the thermal-charge scene beat's timer (~20s), `START_PARTICLE_FX_LOOPED_AT_COORD(\"scr_heist_ornate_thermal_burn\", x, y, z, rx, ry, rz, scale, ...)` at the door coords; door prop is then deleted/swung.",
+   "gotcha": "Looped PTFX returns a handle that must be stopped/removed on cleanup; the `scr_heist_*` asset family needs its fx asset requested (REQUEST_NAMED_PTFX_ASSET + USE_PARTICLE_FX_ASSET) \u2014 see PATTERNS/08 for the full PTFX recipe.",
+   "source": "casinoheist thermal sequence L19721+; uniondepository reward stage",
+   "file": "14-m8t-deep-dive.md",
+   "id": "thermite-burn-heist-fx-start-particle-fx-looped-at-coord"
+  },
+  {
+   "title": "The player-driven interaction loop: marker \u2192 proximity \u2192 Press E \u2192 synced scene \u2b50",
+   "category": "interaction",
+   "problem": "Let the player TRIGGER a heist action at a spot and watch a perfectly-aligned animation \u2014 not an autoplay cutscene.",
+   "method": "Per frame, for each interaction point: `World.DrawMarker(MarkerType.1, pos, \u2026, Color.Goldenrod)`; if `player.Position.DistanceTo(spot) < 1.25f` \u2192 `DisplayHelpTextThisFrame(\"Press ~INPUT_CONTEXT~ to \u2026\")` and `if (Game.IsControlJustPressed(Control.Context /*51*/))` start the beat. On trigger: (1) spawn the props at the player, freeze them (`IsPositionFrozen=true`, `IsCollisionEnabled=false`, `IsInvincible=true`); (2) read the ANCHOR from the target prop: `anchor = targetProp.GetOffsetPosition(new Vector3(0,0.03f,0)); rotZ = targetProp.Rotation.Z`; (3) snap the player to the anchor (`player.Position = anchor` \u2014 a sub-step, not a \"teleport away\"); (4) `Game.Player.CanControlCharacter = false`; (5) build the synced scene (next card).",
+   "gotcha": "`Control 51` = INPUT_CONTEXT (E / dpad-right). The marker is drawn UNCONDITIONALLY each frame; the help + key check live INSIDE the distance test. The `+0.03f` Y offset + `rotZ` from the prop are what make the anim line up with the world object. Disable control for the duration, restore after.",
+   "source": "CayoPericoHeistInSP keypad-hack L33275-33345; bolt-cutter gate L10761-10852",
+   "file": "15-player-driven-heist-interactions.md",
+   "id": "the-player-driven-interaction-loop-marker-proximity-press-e-"
+  },
+  {
+   "title": "Frame-perfect multi-entity animation = ONE synchronized scene, many entities",
+   "category": "animation-scene",
+   "problem": "The ped, the tool prop, the bag, AND the gate/door must all animate in exact lockstep so nothing clips or floats.",
+   "method": "`scene = CREATE_SYNCHRONIZED_SCENE(anchor.x,y,z, 0,0, rotZ, 2)` \u2192 optionally `SET_SYNCHRONIZED_SCENE_LOOPED`/UPDATE bounds \u2192 for EACH prop `PLAY_SYNCHRONIZED_ENTITY_ANIM(prop, scene, \"<perEntityClip>\", dict, 1000.0, -8f, -8f, rotZ+180f, 1148846080, 0)` \u2192 for the PED `TASK_SYNCHRONIZED_SCENE(ped, scene, dict, \"<pedClip>\", 1000.0, -4.0, 128, 0, 1148846080, 0)`. Every entity uses the SAME scene id + the same dict; R* ships a matching clip per entity (e.g. bolt-cutter scene: ped `action_male`, `action_bag`, `action_chain`, `action_lgate`, `action_rgate`, `action_cutter`). Multi-phase (enter\u2192loop\u2192exit): DELETE + RE-CREATE the scene between phases so frames reset.",
+   "gotcha": "props use `rotZ+180f` (face the ped); ped clip blends differ (`-4.0/128` vs props `-8f/-8f`). `1148846080` = the loop/hold flag (0x44000000 as int bits). The ped gets BOTH a TASK_SYNCHRONIZED_SCENE and a PLAY_SYNCHRONIZED_ENTITY_ANIM (redundant but ensures commitment). **This is the piece that fails through the Python bridge \u2014 do it in C#.**",
+   "source": "CayoPericoHeistInSP L33300-33345 (hack), L10780-10852 (bolt cutters)",
+   "file": "15-player-driven-heist-interactions.md",
+   "id": "frame-perfect-multi-entity-animation-one-synchronized-scene-"
+  },
+  {
+   "title": "Completion via synced-scene PHASE (held-key & mash variants)",
+   "category": "completion",
+   "problem": "Know when the player-driven beat is done; support hold-to-progress.",
+   "method": "Poll `GET_SYNCHRONIZED_SCENE_PHASE(scene)` (0\u21921). C# decompiles show it as int-encoded float bits: `0.5\u22481054353216`, `0.75\u22481059353216`, `1.0=1065353216` \u2014 compare those, or read it as a float (cleaner). Stage gates at .5/.75/1.0 fire SFX/VFX then advance. Hold-to-progress (torch/drill): only advance phase while `Game.IsControlPressed(Control.Attack/*24*/)` is held (+ `INPUT_MOVE_LR/UD` 30/31 to steer); release pauses. Some beats hand off to a separate minigame class that signals a completion flag.",
+   "gotcha": "if you read the native as int you MUST compare the float-bit magic numbers; requesting `return_type=float` avoids that. Recreate the scene per phase or the loop never reaches 1.0.",
+   "source": "CayoPericoHeistInSP gate-progress L10861-10880; torch L34126-34259",
+   "file": "15-player-driven-heist-interactions.md",
+   "id": "completion-via-synced-scene-phase-held-key-mash-variants"
+  },
+  {
+   "title": "Walk-in interiors: load IPL + unlock the door + register it auto-opening in the DOOR SYSTEM \u2b50",
+   "category": "doors",
+   "problem": "Let the player physically WALK into a building (no teleport) through a normally-locked door.",
+   "method": "`REQUEST_IPL(...)` so the interior streams, then per entrance door run the \"UnlockDoor\" routine: `SET_STATE_OF_CLOSEST_DOOR_OF_TYPE(modelHash, x,y,z, locked:false, heading:0.0, 50.0, 0)` \u2192 `GET_STATE_OF_CLOSEST_DOOR_OF_TYPE`(\u2192 door enum) \u2192 if `!IS_DOOR_REGISTERED_WITH_SYSTEM(enum)` then `ADD_DOOR_TO_SYSTEM(enum, model, x,y,z, false,false,false)` \u2192 `DOOR_SYSTEM_SET_DOOR_STATE(enum, 0, \u2026)`, `DOOR_SYSTEM_SET_AUTOMATIC_RATE(enum, 30f, \u2026)`, `DOOR_SYSTEM_SET_AUTOMATIC_DISTANCE(enum, 5f, \u2026)`. Now the door swings open automatically within 5m \u2014 a real walk-in. Run it each tick (cheap) so it stays unlocked.",
+   "gotcha": "ISOLATED milo placements (casino vault, **FINBANK / Union Depository**) have NO physical path from the street \u2014 even the Enable-All-Interiors mod uses a TELEPORT MARKER for those. Walk-in only works for map-connected facades (banks, shops, Lester's). The vault DOOR itself opens cleanly via the interior entity set `ACTIVATE_INTERIOR_ENTITY_SET(id,\"SET_VAULT_DOOR_OPEN\")` / `DEACTIVATE \u2026(\"SET_VAULT_DOOR_CLOSED\")` \u2014 real geometry, not a prop rotation.",
+   "source": "EnableAllInteriors `UnlockDoor` (SET_STATE_OF_CLOSEST_DOOR_OF_TYPE + DOOR_SYSTEM_*), vault-door entity set L15424; FINBANK teleport marker L17564",
+   "file": "15-player-driven-heist-interactions.md",
+   "id": "walk-in-interiors-load-ipl-unlock-the-door-register-it-auto-"
+  },
+  {
+   "title": "Stealth guard vision: 35\u00b0 FOV cone + LOS raycast + escalation timer",
+   "category": "enemies",
+   "problem": "Guards that believably SEE the player \u2014 a cone + line-of-sight, escalating suspicious\u2192combat \u2014 for stealth.",
+   "method": "Per guard (throttled, ~1s batches): (1) distance gate `VDIST2(guard, player) < Radius` (\u2248120m). (2) FOV: `dirToPlayer = (player.Pos - guard.Pos)`, `headingToPlayer = dirToPlayer.ToHeading()`, `delta = headingToPlayer - guard.Heading`; in-cone if `|delta| <= SeeingAngle` (\u224835\u00b0 \u2192 ~70\u00b0 cone). (3) LOS: `World.Raycast(guardEye = guard.GetOffsetPosition(0,0.1,1) \u2192 player.Pos, IntersectFlags 511)`; clear if `DidHit && hitPos.DistanceTo(player) < 0.5f`. In-cone + LOS clear \u2192 `TargetVisible`. Escalate with a per-frame `visibleTimer`: ~5-10 frames = alert anim, ~30+ = `ped.Task.Combat(player, flags 0, threatResponse 16)`. Hearing is a parallel trigger: gunshot heard if `player.IsShooting` within 65m (5m if silenced). On engage, cascade to allies within 10m (set their `HasSeenPlayer`, task combat). Accuracy per faction via `GET_RANDOM_INT_IN_RANGE(min,max)` (e.g. security 35-65, military 45-80).",
+   "gotcha": "vision is cone+LOS only \u2014 NO crouch/light/noise modelling (perf tradeoff). The 0.5m raycast tolerance means thin cover may not block. Relationship group (`ADD_RELATIONSHIP_GROUP(\"HATES_PLAYER\")` + `SET_RELATIONSHIP_BETWEEN_GROUPS`) is what makes the engine actually aggress \u2014 without it, tasks won't fight. Throttle detection to ~1s and only tick nearby/active guards or it's expensive.",
+   "source": "SmartGuards FOV+LOS L9692-9727, escalation L9877-9962, hearing L9732-9763, spawn/relationship L1121-1241, accuracy L5950",
+   "file": "15-player-driven-heist-interactions.md",
+   "id": "stealth-guard-vision-35-fov-cone-los-raycast-escalation-time"
+  },
+  {
+   "title": "Investigate-before-combat (the believable \"huh?\" beat)",
+   "category": "enemies",
+   "problem": "A guard that glimpses you should investigate, not instantly laser you.",
+   "method": "On first detect, if `AllowInvestigateBeforeShoot`: set `IsInvestigating=true`, `stopInvestigateTime = GameTime + rand(500,3500)`, and `TASK_GO_TO_COORD_WHILE_AIMING_AT_ENTITY(ped, lastKnownPos, player, moveBlend 1f, shoot:false, 0.8f, 0.8f, navMesh:true, 0, false, firingPattern)`. If it reaches the spot / timer expires while still seeing you \u2192 full combat; if LOS lost \u2192 return to post (`OriginalPosition/Heading`). Dead-body sighting triggers the same investigate state (blip\u219266, radius \u00d71.35).",
+   "gotcha": "an arrest variant approaches at slow moveBlend(90f) and resets at <1.5m \u2014 only one guard arrests at a time (`CurrentArrestPed` guard). The timer randomization is what stops the robotic instant-aggro.",
+   "source": "SmartGuards investigate L9746-9796, arrest L9832-9862, dead-body L10101-10110",
+   "file": "15-player-driven-heist-interactions.md",
+   "id": "investigate-before-combat-the-believable-huh-beat"
+  },
+  {
+   "title": "Mission file = INI with [Mission] + [Objectives] + [Map]; runtime is a stage-index interpreter \u2b50",
+   "category": "mission-schema",
+   "problem": "Define a whole mission as DATA and execute it generically (no per-mission code).",
+   "method": "One `.ini` per mission in `scripts\\HKH_MissionCreator\\Missions\\<name>.ini`, three sections:",
+   "gotcha": "Vector3 serializes as \"X:..f Y:..f Z:..f\"; fields are `|`-delimited with trim. Entities in",
+   "source": "MissionCreator GetMissionContents L8427-8454, RunEvent loop L88023, load L88089-88327",
+   "file": "16-hkh-mission-creator-schema.md",
+   "id": "mission-file-ini-with-mission-objectives-map-runtime-is-a-st"
+  },
+  {
+   "title": "Objective record = typed Event with target + completion params (the generator vocabulary)",
+   "category": "mission-schema",
+   "problem": "One uniform record that covers \"go here / kill that / hack this / loot until $X\".",
+   "method": "`Mission.Event` fields: `EventID`, `EventType Type`, `Subtitle` (objective text), blip config",
+   "gotcha": "completion is per-type (distance < range, entity dead, score >= target, timer, bool flag). The",
+   "source": "MissionCreator Event class L73373-73440, INI serialize L8500, SafeCracking L73168-73305",
+   "file": "16-hkh-mission-creator-schema.md",
+   "id": "objective-record-typed-event-with-target-completion-params-t"
+  },
+  {
+   "title": "The 105 objective-type catalog (mined from R*'s actual mission vocabulary)",
+   "category": "objective-types",
+   "problem": "A complete, grounded vocabulary of \"things a mission can ask the player to do.\"",
+   "method": "`EventType` enum (L2442-2692). Grouped:",
+   "gotcha": "many map 1:1 to natives we already have; the heist/interact ones use synced-scene beats (do them",
+   "source": "MissionCreator EventType enum L2442-2692",
+   "file": "16-hkh-mission-creator-schema.md",
+   "id": "the-105-objective-type-catalog-mined-from-r-s-actual-mission"
+  },
+  {
+   "title": "Secondary events = lifecycle triggers (spawn/sound/condition) fired Start/During/End of each objective",
+   "category": "triggers",
+   "problem": "Make a mission reactive \u2014 spawn reinforcements mid-objective, fail on a condition, branch.",
+   "method": "Each Event carries `SecondaryEvents_Start/_During/_End`. A `SecondaryEvent` has `Type`",
+   "gotcha": "this is how M8T-style \"cops on timeout\" / \"wave on breach\" are expressed as DATA rather than",
+   "source": "MissionCreator secondary-event parse L8540-8551, grouping L88288-88313",
+   "file": "16-hkh-mission-creator-schema.md",
+   "id": "secondary-events-lifecycle-triggers-spawn-sound-condition-fi"
+  },
+  {
+   "title": "Mission entities via Menyoo ObjectPlacementMap (peds/vehicles/props as data)",
+   "category": "world",
+   "problem": "Place the mission's peds/vehicles/props (the cast + set) as data, spawned on demand.",
+   "method": "`[Map]` holds `MenyooMapLoader.ObjectPlacementMap` records: model `Hash`/`Inputtedhash`,",
+   "gotcha": "the same ObjectPlacementMap format is the lingua franca across HKH191 mods \u2014 reuse it for our",
+   "source": "MissionCreator ObjectPlacementMap L60591-60656, map parse L8655-8660, spawn L88260-88273",
+   "file": "16-hkh-mission-creator-schema.md",
+   "id": "mission-entities-via-menyoo-objectplacementmap-peds-vehicles"
+  },
+  {
+   "title": "Real mission-pass / heist-complete / heist-failed scaleform screens (one call each) \u2b50",
+   "category": "hud",
+   "problem": "The authentic R* \"Mission Passed\" / \"HEIST COMPLETE \u2014 $X \u2014 GOLD\" / \"HEIST FAILED\" end screens.",
+   "method": "HKHModHelper wraps the multi-scaleform composition:",
+   "gotcha": "scaleform is a precise state machine with NO error on a wrong sequence (silent fail) \u2014 use the",
+   "source": "HKHModHelper ShowMissionName L10624, HeistComplete L11138, HeistFailed L11269, postfx L11360",
+   "file": "17-hkh-toolkit-and-minigames.md",
+   "id": "real-mission-pass-heist-complete-heist-failed-scaleform-scre"
+  },
+  {
+   "title": "13 GTAO hacking minigames as drop-in beats \u2014 real scaleform UI + a clean completion contract \u2b50",
+   "category": "interaction",
+   "problem": "Player-driven hacking beats (drill/keypad/fingerprint/voltage/beam/circuit) with real R* UIs.",
+   "method": "Each is one entry call that drives the actual GTAO minigame: `RunFingerPrintHack` (casino dots),",
+   "gotcha": "some need an audio bank first (`RequestScriptAudioBank(\"DLC_HEIST_HACKING_SNAKE_SOUNDS\"\u2026)`) +",
+   "source": "HackingMinigames RunCircuitHack L9857 + HACKING_MESSAGE L1466-1599; CopyPrint L9248; Voltage L9049;",
+   "file": "17-hkh-toolkit-and-minigames.md",
+   "id": "13-gtao-hacking-minigames-as-drop-in-beats-real-scaleform-ui"
+  },
+  {
+   "title": "Money / funds with optional Dirty-Money integration (graceful mod detection)",
+   "category": "reward",
+   "problem": "Pay/charge the player, supporting the Dirty-Money mod if present, else vanilla.",
+   "method": "`AddFunds(int/float)`, `RemoveFunds(int/float)` (RemoveFunds pops an account-vs-dirty choice),",
+   "gotcha": "the \"feature-detect an optional mod by DLL presence, fall back gracefully\" pattern is reusable for",
+   "source": "HKHModHelper funds L40727-41137",
+   "file": "17-hkh-toolkit-and-minigames.md",
+   "id": "money-funds-with-optional-dirty-money-integration-graceful-m"
+  },
+  {
+   "title": "The reusable utility belt (streaming, control, geometry, attach, audio, player-lock)",
+   "category": "shared-base",
+   "problem": "The everyday building blocks every mission/heist needs, pre-wrapped with the right native order.",
+   "method": "Streaming: `RequestModel(string/VehicleHash/PedHash/int/uint)` (polls until loaded),",
+   "gotcha": "`DisplayHelpTextThisFrame(msg, formal:true)` is the mission-styled help; `GetDistance_VDIST2` takes",
+   "source": "HKHModHelper L436-12154 (streaming/control/geometry/attach/audio/player) \u2014 full catalog in FINDINGS",
+   "file": "17-hkh-toolkit-and-minigames.md",
+   "id": "the-reusable-utility-belt-streaming-control-geometry-attach-"
+  }
+ ]
+}

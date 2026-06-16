@@ -92,3 +92,47 @@ alexguirre rage-parser-dumps, citizenfx natives.
   the research agent for it was auto-blocked by a content filter; re-run reframed. `inspect` already does
   ReClass-lite typing; growing it to recursive `expand(addr, depth)` + persisted class defs is the next step.
 - **Inline detours** (cyminhook) — researched; ship when a real hook is needed in-game.
+
+---
+
+## Getting GOOD info out of pre-made mods (decompile-quality workflow)
+
+Ghidra on a stripped C++ binary is genuinely messy — wrong types, `FUN_0040…` everywhere, no
+direction. The fix is mostly **don't use Ghidra for GTA mods** — pick source material that decompiles
+cleanly, and reserve Ghidra for the rare native `.asi`.
+
+### Reference-quality ladder (prefer the top; Ghidra is the floor)
+1. **GitHub source** — clean, named, licensed. Always check if a gta5-mods page links its repo.
+2. **SHVDN `.dll` (managed .NET) → ILSpy/dnSpyEx** — decompiles to **near-perfect C#**: real method
+   names, `Function.Call(Hash.CREATE_VEHICLE, …)` sequences intact. ~80% of gta5-mods *scripts* are
+   these. This is the workhorse — transcode the C# native calls straight to bridge `call_native(...)`.
+3. **Lua / JS (FiveM resources)** — already source.
+4. **Native `.asi` / C++ `.dll` → Ghidra** — lossy, last resort. Use the techniques below.
+
+### .NET (SHVDN) — tools
+- **ILSpy / `ilspycmd`** (`dotnet tool install -g ilspycmd`) — headless, scriptable; the default.
+  `ilspycmd Mod.dll -o Examples/_decompiled/<mod>` dumps a full C# project.
+- **dnSpyEx** (maintained dnSpy fork) — interactive, when you want to step/edit IL.
+- Obfuscated (rare for SP mods)? run **de4dot** first, then ILSpy.
+
+### Native `.asi` / C++ — make Ghidra less messy
+1. **Recover classes from RTTI** — run Ghidra's `RecoverClassesFromRTTIScript` (MSVC:
+   `RTTIWindowsClassRecoverer`). GTA/RAGE binaries keep RTTI, so this restores class hierarchies,
+   ctors/dtors, and vtables → far better than raw `FUN_` soup. (Mirrors our live `identify`/RTTI tool.)
+2. **Feed it known types** — import a Ghidra Data Type archive built from **GTAV-Classes** headers
+   (`CPed/CVehicle/CHandlingData`) and the **ScriptHookV SDK** export signatures, so structs/args type
+   correctly instead of `undefined8`. Our `par_index.json` field names can seed struct labels too.
+3. **Fix the obvious first** — set calling convention, correct undefined functions (`D`/`F`),
+   define data as the right type; the decompiler cascades from there. (NSA "Improving Disassembly and
+   Decompilation" class.)
+4. **AI-assisted loop = the real "direction" fix.** Run **GhidraMCP** (Ghidra plugin + MCP bridge):
+   it exposes `list_functions` / `decompile` / `rename_function` / `set_comment` as tools, so **Claude
+   itself reads each messy function, infers intent, and writes back meaningful names + comments** —
+   turning aimless `FUN_`/`DAT_` output into a navigable, annotated map. This is the single biggest
+   quality win for C++ targets and directly answers "no clear direction."
+
+### Bottom line
+Choosing SHVDN-C# (ILSpy) or source over a C++ `.asi` removes the Ghidra problem for ~all script mods.
+When a native binary is unavoidable: RTTI-recover → apply known types → drive it with GhidraMCP so
+Claude annotates as it reads. Tools: ilspycmd, dnSpyEx, de4dot, Ghidra + RecoverClassesFromRTTI +
+GhidraMCP. Refs: ILSpy (icsharpcode/ILSpy), NSA Ghidra advanced class, github.com/LaurieWired/GhidraMCP.

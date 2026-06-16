@@ -1,0 +1,25 @@
+{
+  "$note": "Curated seed of common animations/scenarios (from rpemotes + Menyoo PedAnimList, see Examples/PATTERNS/05-animation.md). For the FULL set, import alexguirre's animations-list. Each entry: label -> {type: anim|scenario, dict?, clip?, scenario?, flags?, prop?, bone?, label}.",
+  "anims": {
+    "lean":            {"type": "scenario", "scenario": "WORLD_HUMAN_LEANING", "label": "Lean"},
+    "smoke":           {"type": "scenario", "scenario": "WORLD_HUMAN_SMOKING", "label": "Smoke"},
+    "cop idle":        {"type": "scenario", "scenario": "WORLD_HUMAN_COP_IDLES", "label": "Cop Idle"},
+    "guard":           {"type": "scenario", "scenario": "WORLD_HUMAN_GUARD_STAND", "label": "Guard Stand"},
+    "kneel":           {"type": "scenario", "scenario": "CODE_HUMAN_MEDIC_KNEEL", "label": "Medic Kneel (CPR-ish)"},
+    "drink coffee":    {"type": "scenario", "scenario": "WORLD_HUMAN_AA_COFFEE", "label": "Drink Coffee"},
+    "hands up":        {"type": "anim", "dict": "random@arrests", "clip": "idle_2_hands_up", "flags": 49, "label": "Hands Up"},
+    "surrender":       {"type": "anim", "dict": "random@arrests@busted", "clip": "idle_a", "flags": 1, "label": "Surrender"},
+    "push ups":        {"type": "anim", "dict": "amb@world_human_push_ups@male@base", "clip": "base", "flags": 1, "label": "Push Ups"},
+    "sit ups":         {"type": "anim", "dict": "amb@world_human_sit_ups@male@base", "clip": "base", "flags": 1, "label": "Sit Ups"},
+    "jog in place":    {"type": "anim", "dict": "amb@world_human_jog_standing@male@fitbase", "clip": "base", "flags": 1, "label": "Jog In Place"},
+    "hip hop dance":   {"type": "anim", "dict": "missfbi3_sniping", "clip": "dance_m_default", "flags": 1, "label": "Hip Hop Dance"},
+    "private dance":   {"type": "anim", "dict": "mini@strip_club@private_dance@part1", "clip": "priv_dance_p1", "flags": 1, "label": "Private Dance"},
+    "sleep":           {"type": "anim", "dict": "mp_sleep", "clip": "bind_pose_180", "flags": 1, "label": "Lie / Sleep"},
+    "wave arms":       {"type": "anim", "dict": "random@car_thief@victimpoints_ig_3", "clip": "arms_waving", "flags": 49, "label": "Wave Arms"},
+    "come here":       {"type": "anim", "dict": "gestures@m@standing@fat", "clip": "gesture_come_here_hard", "flags": 49, "label": "Come Here"},
+    "handshake":       {"type": "paired", "dict": "mp_ped_interaction", "clip": "handshake_guy_a", "partner_clip": "handshake_guy_b", "sync_front": 0.9, "sync_heading": 180.0, "label": "Handshake"},
+    "umbrella":        {"type": "prop", "dict": "amb@world_human_drinking@coffee@male@base", "clip": "base", "flags": 49, "prop": "p_amb_brolly_01", "bone": 28422, "placement": [0.0, 0.02, -0.036, 0.0, 10.0, 0.0], "label": "Umbrella"},
+    "box carry":       {"type": "prop", "dict": "anim@heists@box_carry@", "clip": "idle", "flags": 49, "prop": "hei_prop_heist_box", "bone": 60309, "label": "Box Carry"},
+    "crouch walk":     {"type": "clipset", "clipset": "move_ped_crouched", "blend": 0.6, "label": "Crouch Walk"}
+  }
+}

@@ -52,10 +52,14 @@ On your PC (for the host):
 
 ## Setup
 
+**Full step-by-step walkthrough: [`INSTALL.md`](INSTALL.md).** Quick version:
+
 ```powershell
-# 1. Python deps (in a venv)
-python -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
+# 1. Python deps — put the venv OUTSIDE this folder (Dropbox/Git sync over a venv corrupts it)
+python -m venv C:\Users\%USERNAME%\GTAV-Claude-MCP-venv
+setx GTAV_MCP_PYTHON C:\Users\%USERNAME%\GTAV-Claude-MCP-venv\Scripts\python.exe
+"C:\Users\%USERNAME%\GTAV-Claude-MCP-venv\Scripts\pip" install -r requirements.txt
+#    (open a NEW terminal after setx so GTAV_MCP_PYTHON takes effect — .mcp.json reads it)
 
 # 2. Log in to Claude once (no API key needed)
 claude /login

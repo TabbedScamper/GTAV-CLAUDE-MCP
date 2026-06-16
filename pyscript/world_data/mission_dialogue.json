@@ -1,0 +1,25 @@
+{
+  "$note": "Real GTA V heist CREW DIALOGUE, harvested from R*'s decompiled scripts. Each beat -> conversation ROOTS (a root is a dialogue-tree label, e.g. FH1_BANK) + the per-mission VOICE label (arg2 of the conversation, e.g. FH1AUD). Played via the scripted-conversation system: CREATE_NEW_SCRIPTED_CONVERSATION -> ADD_PED_TO_CONVERSATION(ped, voiceLabel) -> START_SCRIPT_CONVERSATION(root). The Big Score (FH1_) covers the bank->car->heli->air escape chain. NOTE: a root is NOT individually playable as a one-shot; needs the conversation struct (see commentary.dialogue, marked verify-in-game).",
+  "$missions": {"FH1": "The Big Score (subtle)", "FH3A/BS2B": "The Big Score (obvious)", "FBS1/AH": "Agency heist", "DH2A/DH2B": "Docks heist", "CST7": "Car steal finale"},
+  "beats": {
+    "mission_start": [{"root": "FH1_INFO", "voice": "FH1AUD"}, {"root": "FBS1_INTRO", "voice": "FBS1AUD"}],
+    "approach":      [{"root": "FH3A_GOING", "voice": "FH3AAUD"}, {"root": "FBS1_FOLLOW", "voice": "FBS1AUD"}],
+    "at_bank":       [{"root": "FH1_BANK", "voice": "FH1AUD"}, {"root": "BS2B_BANK", "voice": "BS2BAUD"}],
+    "breach":        [{"root": "FH1_HOLE", "voice": "FH1AUD"}, {"root": "BS2B_DRIL", "voice": "BS2BAUD"}],
+    "grab":          [{"root": "FH1_GOTCON", "voice": "FH1AUD"}, {"root": "BS2B_GOTIT", "voice": "BS2BAUD"}],
+    "in_car":        [{"root": "FH1_CAR", "voice": "FH1AUD"}, {"root": "FH1_FRCAR", "voice": "FH1AUD"}, {"root": "BS2B_GETAWAY", "voice": "BS2BAUD"}],
+    "at_heli":       [{"root": "FH1_HELI", "voice": "FH1AUD"}, {"root": "FH1_BKHELI", "voice": "FH1AUD"}, {"root": "BS2B_HELI2F", "voice": "BS2BAUD"}],
+    "in_air":        [{"root": "FH1_AIR", "voice": "FH1AUD"}, {"root": "FH1_AIR2", "voice": "FH1AUD"}, {"root": "BS2B_AIR", "voice": "BS2BAUD"}],
+    "escape":        [{"root": "FH1_ROUTE", "voice": "FH1AUD"}, {"root": "BS2B_GOGO", "voice": "BS2BAUD"}],
+    "cops":          [{"root": "FH3A_LOSECOP", "voice": "FH3AAUD"}, {"root": "BS2B_LOSE", "voice": "BS2BAUD"}, {"root": "AH3B_LOST_COPS", "voice": "AH3BAUD"}],
+    "chatter":       [{"root": "FH1_CHATTER", "voice": "FH1AUD"}, {"root": "BS2B_CHAT", "voice": "BS2BAUD"}],
+    "mission_failed":[{"root": "FH1_FAILTME", "voice": "FH1AUD"}],
+    "mission_passed":[{"root": "FH1_ENDT", "voice": "FH1AUD"}, {"root": "BS2B_GOOD_TM", "voice": "BS2BAUD"}]
+  },
+  "sfx_banks": {
+    "$note": "heist SFX banks (load via REQUEST_SCRIPT_AUDIO_BANK) to make beats SOUND authentic",
+    "breach": ["BIG_SCORE_CUTTER_01", "BIG_SCORE_CUTTER_02", "BIG_SCORE_BANK_DOOR", "Vault_Door"],
+    "grab": ["BIG_SCORE_GOLD_CAGE_ROLL", "BIG_SCORE_GOLD_CAGE_LOCK"],
+    "explosion": ["BIG_SCORE_GOLD_VAULT_EXPLOSION", "BIG_SCORE_TRUCK_EXPLOSION"]
+  }
+}

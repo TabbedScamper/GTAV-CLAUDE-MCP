@@ -86,6 +86,7 @@ def _send_command(command: str, params: dict | None = None, timeout: float | Non
 
     try:
         with socket.create_connection((BRIDGE_HOST, BRIDGE_PORT), timeout=timeout) as sock:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # no Nagle delay on the length-prefixed RPC
             # Build payload
             payload = json.dumps({
                 "command": command,
@@ -759,11 +760,6 @@ def enum_decode(enum: str, value) -> str:
     VC_SPORT). Handles bitflag enums too. Needs a dump loaded."""
     return json.dumps(_send_command("enum_decode", {"enum": enum, "value": value}), indent=2)
 
-@mcp.tool()
-def par_struct(struct: str) -> str:
-    """All fields (offset,name,type,size) of a parser-reflected struct from the imported dump."""
-    return json.dumps(_send_command("par_struct", {"struct": struct}), indent=2)
-
 # =============================================================================
 # Utility Tools
 # =============================================================================
@@ -1399,6 +1395,203 @@ def reload_scripts() -> str:
     Insert key - so a freshly-built/deployed DLL loads with NO manual keypress. Use after deploying a
     new ClaudeRadio.dll. (Key map: Insert = SHVDN/C# scripts; F9 = the PyLoaderV bridge itself.)"""
     return json.dumps(_send_command("reload_scripts"), indent=2)
+
+
+# =============================================================================
+# World-sensing: where am I + what's happening (the real-time-play foundation)
+# =============================================================================
+
+@mcp.tool()
+def get_world_state() -> str:
+    """The semantic snapshot for real-time play: player (pos/heading/health/armor/weapon/wanted/vehicle),
+    location in words (nearest landmark + zone), and nearby threats/vehicles annotated with distance +
+    compass + ahead/behind. Returns a compact dict plus a human 'summary' string. Call this each
+    think-cycle to know where you are and what's happening."""
+    return json.dumps(_send_command("get_world_state"), indent=2)
+
+
+@mcp.tool()
+def world_events() -> str:
+    """Diff the world vs the last snapshot -> notable events (took_damage, wanted_changed, entered/exited
+    vehicle, new_threat, threat_closing). Event-driven re-planning: act when something changes."""
+    return json.dumps(_send_command("world_events"), indent=2)
+
+
+@mcp.tool()
+def describe_location(x: float = None, y: float = None, z: float = None) -> str:
+    """Human-readable location for a coord (or the player if omitted): nearest landmark + bearing + zone."""
+    return json.dumps(_send_command("describe_location", {"x": x, "y": y, "z": z}), indent=2)
+
+
+@mcp.tool()
+def nearest_road_node(x: float = None, y: float = None, z: float = None) -> str:
+    """Nearest drivable road node to a coord (or the player). For on-road spawn placement (getaway car on
+    the street, not in a field). NOTE: needs in-game verification (out-param native)."""
+    return json.dumps(_send_command("nearest_road_node", {"x": x, "y": y, "z": z}), indent=2)
+
+
+@mcp.tool()
+def raycast(from_xyz: list, to_xyz: list, flags: int = -1) -> str:
+    """Shape-test ray from one coord to another (line-of-sight, ground probe, 'what's in front').
+    NOTE: result retrieval needs in-game verification (out-param native)."""
+    return json.dumps(_send_command("raycast", {"from": from_xyz, "to": to_xyz, "flags": flags}), indent=2)
+
+
+@mcp.tool()
+def act(verb: str, params: dict = None) -> str:
+    """EXECUTOR: drive the player ped with a high-level verb that the engine runs at 60fps. Verbs:
+    walk_to/drive_to (x,y,z), engage (target handle), engage_area (radius), flee (from_ped|x,y,z),
+    follow (entity), drive_wander, wander, stop. Re-issuing the same verb is a no-op (no task spam).
+    This is the action half of 'play and watch' — pair with get_world_state/world_events to close the loop."""
+    return json.dumps(_send_command("act", {"verb": verb, "params": params or {}}), indent=2)
+
+
+@mcp.tool()
+def list_verbs() -> str:
+    """List the Executor verbs and their params."""
+    return json.dumps(_send_command("list_verbs"), indent=2)
+
+
+@mcp.tool()
+def get_intent() -> str:
+    """The verb the player ped is currently executing (current high-level intent)."""
+    return json.dumps(_send_command("get_intent"), indent=2)
+
+
+@mcp.tool()
+def get_objective() -> str:
+    """The current MISSION OBJECTIVE the game is directing the player to, sensed from blips: the
+    GPS-routed destination > user waypoint > nearest enemy/objective blip. Returns kind + coords (+ target
+    entity) + on_mission. This is what turns 'wander' into 'pursue the objective'. (Reads where to go, NOT
+    the objective text — see docs/PLAY-AND-WATCH.md for what's in/out of reach for full missions.)"""
+    return json.dumps(_send_command("get_objective"), indent=2)
+
+
+@mcp.tool()
+def get_objectives() -> str:
+    """All objective-relevant blips (routed destination, waypoint, enemy/friend/objective markers) with
+    coords/sprite/colour, plus on_mission/waypoint_active. get_objective() returns just the primary."""
+    return json.dumps(_send_command("get_objectives"), indent=2)
+
+
+@mcp.tool()
+def is_on_mission() -> str:
+    """Whether a mission script is active (GET_MISSION_FLAG) and whether a user waypoint is set."""
+    return json.dumps(_send_command("is_on_mission"), indent=2)
+
+
+@mcp.tool()
+def comment(event: str, voice: str = None) -> str:
+    """Make the protagonist react to an EVENT with a real in-game voice line (Michael/Franklin/Trevor),
+    played natively. Events: combat_start, took_damage, kill, wanted_gained, wanted_cleared,
+    objective_done, mission_start/passed/failed, etc. Optional voice='trevor'|'michael'|'franklin' forces
+    who speaks. Cooldown-gated so it doesn't spam. (Mission engine fires these automatically.)"""
+    return json.dumps(_send_command("comment", {"event": event, "voice": voice}), indent=2)
+
+
+@mcp.tool()
+def say(context: str, voice: str = None) -> str:
+    """Play a specific speech CONTEXT in the protagonist's voice (e.g. 'GENERIC_WAR_CRY', 'GENERIC_CURSE_HIGH').
+    The game plays its own recorded line. Optional voice override."""
+    return json.dumps(_send_command("say", {"context": context, "voice": voice}), indent=2)
+
+
+# =============================================================================
+# Build-anything layer: name->hash catalogs, queryable recipes, native vehicle tuning
+# =============================================================================
+
+@mcp.tool()
+def resolve(name: str, kind: str = None) -> str:
+    """Resolve a plain-English or internal name to a model/weapon hash, e.g. resolve("police car"),
+    resolve("ak47"), resolve("a cop"). kind = vehicles|peds|weapons (optional). Returns the hash to
+    spawn/give, the matched name, and a crash_warning if the model is known to crash. Try this BEFORE
+    spawning so you use the right hash instead of guessing."""
+    return json.dumps(_send_command("resolve", {"name": name, "kind": kind}), indent=2)
+
+
+@mcp.tool()
+def catalog_search(query: str, kind: str = None, limit: int = 25) -> str:
+    """Search the name->hash catalogs (846 vehicles, 1054 peds, 114 weapons) by substring."""
+    return json.dumps(_send_command("catalog_search", {"query": query, "kind": kind, "limit": limit}), indent=2)
+
+
+@mcp.tool()
+def catalog_categories() -> str:
+    """List the natural-language aliases available to resolve() (e.g. 'police car', 'getaway car')."""
+    return json.dumps(_send_command("catalog_categories"), indent=2)
+
+
+@mcp.tool()
+def recipe_search(query: str, category: str = None, limit: int = 6) -> str:
+    """Search the distilled GTA-V technique recipes (mined from real mods): how to attach a prop to a
+    bone, spawn on the ground, drive scaleform, marshal a Vector3 return, etc. Each result gives the
+    exact native sequence + the non-obvious gotcha. Use this BEFORE building something non-trivial."""
+    return json.dumps(_send_command("recipe_search", {"query": query, "category": category, "limit": limit}), indent=2)
+
+
+@mcp.tool()
+def recipe_get(id: str) -> str:
+    """Get one full recipe card by id or title substring (problem/method/gotcha/source)."""
+    return json.dumps(_send_command("recipe_get", {"id": id}), indent=2)
+
+
+@mcp.tool()
+def recipe_categories() -> str:
+    """List recipe categories and counts (vehicle, ui, scaleform, spawn, attachment, animation, camera, ...)."""
+    return json.dumps(_send_command("recipe_categories"), indent=2)
+
+
+@mcp.tool()
+def anim_search(query: str = "", limit: int = 15) -> str:
+    """Search the animation catalog by label (dance, smoke, push ups, umbrella, handshake, crouch...).
+    Returns each entry's type (anim/scenario/prop/paired/clipset) + dict/clip/flags/prop/bone so you can
+    play it directly. For the full set, see alexguirre's animations-list (TOOLS-UNDERSTAND-AND-INJECT.md)."""
+    return json.dumps(_send_command("anim_search", {"query": query, "limit": limit}), indent=2)
+
+
+@mcp.tool()
+def anim_get(name: str) -> str:
+    """Get one animation entry by label (e.g. 'umbrella', 'hands up') with its dict/clip/flags and, for
+    prop emotes, the prop model + bone + placement — everything needed for the prop+bone+anim recipe."""
+    return json.dumps(_send_command("anim_get", {"name": name}), indent=2)
+
+
+@mcp.tool()
+def set_wheel_fitment(track_front: float = None, track_rear: float = None,
+                      camber_front: float = None, camber_rear: float = None) -> str:
+    """Set wheel stance on the player's current vehicle via NATIVES (VStancer method, update-proof, no
+    memory offsets). track_* = how far wheels stick out; camber_* = wheel lean. L/R mirroring is
+    automatic. The engine re-derives each frame, so re-apply (or use continuous) to persist."""
+    return json.dumps(_send_command("set_wheel_fitment", {
+        "track_front": track_front, "track_rear": track_rear,
+        "camber_front": camber_front, "camber_rear": camber_rear}), indent=2)
+
+
+@mcp.tool()
+def get_wheel_fitment() -> str:
+    """Read current wheel track-width + camber (front/rear) of the player's vehicle."""
+    return json.dumps(_send_command("get_wheel_fitment"), indent=2)
+
+
+@mcp.tool()
+def get_handling(field: str = None) -> str:
+    """Read live CHandlingData floats of the player's vehicle (all, or one field). Fields: initial_drive_force,
+    drive_max_flat_vel, traction_curve_max, brake_force, suspension_raise, etc. (list_handling_fields)."""
+    return json.dumps(_send_command("get_handling", {"field": field}), indent=2)
+
+
+@mcp.tool()
+def set_handling(field: str, value: float) -> str:
+    """Write a live CHandlingData float on the player's vehicle (e.g. initial_drive_force for power,
+    drive_max_flat_vel for top speed). WARNING: CHandlingData is MODEL-SHARED - changes every vehicle
+    of that model. See list_handling_fields for valid names."""
+    return json.dumps(_send_command("set_handling", {"field": field, "value": value}), indent=2)
+
+
+@mcp.tool()
+def list_handling_fields() -> str:
+    """List the editable CHandlingData fields and their verified offsets."""
+    return json.dumps(_send_command("list_handling_fields"), indent=2)
 
 
 # =============================================================================

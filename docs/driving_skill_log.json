@@ -1,0 +1,123 @@
+{
+  "results": [
+    {
+      "label": "trial 1/9",
+      "style": "NORMAL",
+      "cruise_ms": 12,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 6.6,
+      "events": []
+    },
+    {
+      "label": "trial 2/9",
+      "style": "NORMAL",
+      "cruise_ms": 22,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 21.6,
+      "events": []
+    },
+    {
+      "label": "trial 3/9",
+      "style": "NORMAL",
+      "cruise_ms": 30,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 0.1,
+      "events": [],
+      "final_run_accidents": 0
+    },
+    {
+      "label": "trial 4/9",
+      "style": "RUSHED",
+      "cruise_ms": 12,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 12.0,
+      "events": []
+    },
+    {
+      "label": "trial 5/9",
+      "style": "RUSHED",
+      "cruise_ms": 22,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 21.4,
+      "events": []
+    },
+    {
+      "label": "trial 6/9",
+      "style": "RUSHED",
+      "cruise_ms": 30,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 29.3,
+      "events": []
+    },
+    {
+      "label": "trial 7/9",
+      "style": "AVOID",
+      "cruise_ms": 12,
+      "dur": 18,
+      "accidents": 1,
+      "body_loss": 7.7,
+      "top_speed_ms": 12.0,
+      "events": [
+        {
+          "at": [
+            -130.8,
+            -720.2
+          ],
+          "speed_ms": 0.3,
+          "severity": 7.7
+        }
+      ]
+    },
+    {
+      "label": "trial 8/9",
+      "style": "AVOID",
+      "cruise_ms": 22,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 21.8,
+      "events": []
+    },
+    {
+      "label": "trial 9/9",
+      "style": "AVOID",
+      "cruise_ms": 30,
+      "dur": 18,
+      "accidents": 0,
+      "body_loss": 0.0,
+      "top_speed_ms": 25.9,
+      "events": []
+    },
+    {
+      "label": "contrast-PLOUGH",
+      "style": "PLOUGH",
+      "cruise_ms": 22,
+      "dur": 12,
+      "accidents": 1,
+      "body_loss": 18.2
+    }
+  ],
+  "best": {
+    "label": "trial 3/9",
+    "style": "NORMAL",
+    "cruise_ms": 30,
+    "dur": 18,
+    "accidents": 0,
+    "body_loss": 0.0,
+    "top_speed_ms": 0.1,
+    "events": [],
+    "final_run_accidents": 0
+  }
+}

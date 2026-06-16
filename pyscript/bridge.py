@@ -471,6 +471,90 @@ def show_notification(message: str):
     else:
         print(f"[NOTIFY] {message}")
 
+def handle_hud_message(params: dict) -> dict:
+    """On-screen text via the REAL text-command builder, run INLINE in ONE game-thread call so
+    BEGIN/ADD/END share the same frame. (Firing them as separate bridge calls breaks the builder ->
+    nothing renders — that's why mission objective text never showed.) style: subtitle|help|notify."""
+    if not (PYLOADER_AVAILABLE and gta):
+        return {"error": "no game"}
+    text = str(params.get("text", ""))[:240]
+    style = params.get("style", "subtitle")
+    dur = int(params.get("duration", 5000))
+    try:
+        if style == "notify":
+            gta.notify(text)
+        elif style == "help":
+            gta.invoke(0x8509B634FBE7DA11, "STRING", return_type="void")            # BEGIN_TEXT_COMMAND_DISPLAY_HELP
+            gta.invoke(0x6C188BE134E074AA, text, return_type="void")                # ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME
+            gta.invoke(0x238FFE5C7B0498A6, 0, False, True, -1, return_type="void")  # END_TEXT_COMMAND_DISPLAY_HELP
+        else:  # subtitle (bottom-center, the mission-objective style)
+            gta.invoke(0xB87A37EEB7FAA67D, "STRING", return_type="void")            # BEGIN_TEXT_COMMAND_PRINT
+            gta.invoke(0x6C188BE134E074AA, text, return_type="void")                # ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME
+            gta.invoke(0x9D77056A530643F6, dur, True, return_type="void")           # END_TEXT_COMMAND_PRINT
+        return {"success": True, "style": style}
+    except Exception as e:
+        return {"error": str(e)}
+
+# Persistent on-screen objective text, drawn EVERY FRAME via DRAW_TEXT so it ignores the player's
+# Subtitles display setting (unlike PRINT subtitles, which only show when that setting is on). Set via
+# the `set_hud_text` command; auto-expires after its duration. (Defined BEFORE the COMMANDS table.)
+_hud_text = {"text": "", "until": 0.0}
+
+def _inv(name, *args, rt="void"):
+    """Invoke a native BY NAME via the verified DB (safe hash). Game-thread only."""
+    if not (PYLOADER_AVAILABLE and gta and NATIVE_DB.loaded):
+        return None
+    h = NATIVE_DB.lookup(name)
+    return gta.invoke(int(h, 16), *args, return_type=rt) if h else None
+
+def _draw_hud_text():
+    """Render the active objective text once per frame (manual HUD draw). preview=True paints a white
+    wash + black text (the design-preview procedure) so a screenshot can confirm whether the bridge can
+    draw 2D at all; otherwise a dark banner + yellow text (the real objective look)."""
+    txt = _hud_text.get("text")
+    if not txt or time.time() >= _hud_text.get("until", 0.0):
+        return
+    preview = _hud_text.get("preview")
+    if preview:
+        _inv("DRAW_RECT", 0.5, 0.5, 1.0, 1.0, 255, 255, 255, 255)   # full white wash
+        tr, tg, tb, tscale, ty = 255, 0, 0, 1.4, 0.4               # HUGE red text (unmissable if it draws)
+    else:
+        # Real-mission look: NO black box — just centered text with a drop shadow (like R*'s GODTEXT).
+        tr, tg, tb, tscale, ty = 255, 255, 255, 0.5, 0.82
+    _inv("SET_TEXT_FONT", 0)
+    _inv("SET_TEXT_SCALE", 0.0, tscale)                             # p0 is legacy/ignored; p1 = scale
+    _inv("SET_TEXT_COLOUR", tr, tg, tb, 255)
+    _inv("SET_TEXT_CENTRE", True)
+    # CRITICAL: centered text renders NOTHING without a wrap region to center within. (GTA text gotcha.)
+    _inv("SET_TEXT_WRAP", 0.0, 1.0)
+    _inv("SET_TEXT_DROP_SHADOW")
+    _inv("SET_TEXT_OUTLINE")
+    _inv("BEGIN_TEXT_COMMAND_DISPLAY_TEXT", "STRING")
+    _inv("ADD_TEXT_COMPONENT_SUBSTRING_PLAYER_NAME", txt)
+    _inv("END_TEXT_COMMAND_DISPLAY_TEXT", 0.5, ty, 0)
+    _hud_text["drawn"] = _hud_text.get("drawn", 0) + 1
+
+_OBJECTIVE_FILE = os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")),
+                               "GTAV-Claude-MCP", "objective.txt")
+
+def handle_set_hud_text(params: dict) -> dict:
+    """Set/replace the persistent bottom-center objective text. duration in seconds (0/empty clears it).
+    The bottom-center mission text is rendered by the C#/SHVDN companion (ClaudeChatUI.dll), which reads
+    `objective.txt` every frame — because PyLoaderV's Python native-invoke can't drive GTA's multi-call
+    text-command builder (only single-call draws + notifications render from Python). We write the file
+    here; the C# (with a proper script-thread context, like the M8T heist mods) does the actual draw."""
+    text = str(params.get("text", ""))[:200]
+    dur = float(params.get("duration", 8.0))
+    write_err = None
+    try:
+        os.makedirs(os.path.dirname(_OBJECTIVE_FILE), exist_ok=True)
+        # empty text or dur<=0 => clear (write empty file so the C# stops drawing)
+        with open(_OBJECTIVE_FILE, "w", encoding="utf-8") as f:
+            f.write(text if (text and dur != 0) else "")
+    except Exception as e:
+        write_err = f"{type(e).__name__}: {e}"
+    return {"success": write_err is None, "text": text, "file": _OBJECTIVE_FILE, "write_err": write_err}
+
 # =============================================================================
 # Work Queue (thread-safe handoff from socket to game tick)
 # =============================================================================
@@ -568,6 +652,7 @@ _undo_stack: list[dict] = []
 
 # Continuous write storage - applied every frame
 _continuous_writes: dict[str, dict] = {}  # key -> {wheel_index, field, value}
+_raw_continuous: dict[str, dict] = {}  # key -> {chain:[offsets], final_off, value, vehicle_handle}
 
 # In-game chat system
 _chat_history: list[dict] = []  # {sender: "claude"|"user", text: str, timestamp: float}
@@ -1128,6 +1213,21 @@ def handle_list_continuous(params: dict) -> dict:
     """List all active continuous writes."""
     return {"continuous_writes": list(_continuous_writes.values())}
 
+def handle_set_raw_continuous(params: dict) -> dict:
+    """Register a per-frame raw write at a pointer-chain address (re-resolved from the player vehicle).
+    params: key, chain (list of offsets to deref from CVehicle), final_off, value (int32), enabled."""
+    key = params.get("key", "raw")
+    if not params.get("enabled", True):
+        _raw_continuous.pop(key, None)
+        return {"success": True, "key": key, "enabled": False}
+    _raw_continuous[key] = {
+        "chain": [int(x) for x in params.get("chain", [])],
+        "final_off": int(params.get("final_off", 0)),
+        "value": int(params.get("value", 0)),
+        "vehicle_handle": get_player_vehicle_handle(),
+    }
+    return {"success": True, "key": key, "enabled": True, "value": params.get("value")}
+
 # Per-frame wheel-resolution cache: avoid re-brute-scanning the wheels array every frame.
 _wheels_cache = {"handle": None, "wheels_ptr": None, "wheel_count": 0}
 
@@ -1149,6 +1249,26 @@ def _resolve_wheels_cached():
 
 def apply_continuous_writes():
     """Apply all continuous writes - called every frame (game thread). No WAL/fsync here."""
+    # Raw per-frame writes (arbitrary pointer-chain address). Re-resolves from the player vehicle
+    # each frame, mirroring what a C# re-assert would do. Independent of wheel writes.
+    if _raw_continuous:
+        h = get_player_vehicle_handle()
+        if h is not None:
+            vaddr = get_vehicle_address(h)
+            if vaddr:
+                for k, d in list(_raw_continuous.items()):
+                    if d.get("vehicle_handle") not in (None, h):
+                        continue
+                    addr = vaddr
+                    ok = True
+                    for off in d["chain"]:
+                        addr = read_ptr(addr + off)
+                        if not addr:
+                            ok = False
+                            break
+                    if ok:
+                        write_int(addr + d["final_off"], d["value"], wal=False)
+
     if not _continuous_writes:
         return
 
@@ -1448,14 +1568,9 @@ def handle_write_visual_wheel(params: dict) -> dict:
 
     target_addr = ptr2 + value_offset
 
-    # Validate target address before write
-    if not is_valid_address(target_addr, 4, check_writable=True):
-        # Try to make it writable
-        old_protect = ctypes.c_ulong()
-        if not kernel32.VirtualProtect(ctypes.c_void_p(target_addr), 4, 0x40, ctypes.byref(old_protect)):
-            return {"error": f"Cannot write to 0x{target_addr:X}"}
-
-    # Read old value and write new
+    # Read old value and write new. write_float -> _write_raw flips the page RW and
+    # RESTORES the original protection (validate-before-deref); don't hand-roll a
+    # VirtualProtect here — the old code left the page RWX (a protection leak).
     old_value = read_float(target_addr)
     write_result = write_float(target_addr, float(value))
     new_value = read_float(target_addr)
@@ -2751,6 +2866,121 @@ def handle_reload_scripts(params: dict) -> dict:
 
 
 # =============================================================================
+# Keyboard injection - lets Claude drive in-game mod menus (LemonUI etc.) and
+# reload scripts WITHOUT a human keypress, closing the autonomous debug loop.
+#
+# WHY TWO DELIVERY PATHS:
+#   - keybd_event(SCANCODE): OS-level synthetic input. DirectInput/raw-input games
+#     (GTA V) and therefore LemonUI's Game.IsControlJustPressed() menu navigation
+#     only see input THIS way, and ONLY when GTA is the FOREGROUND window. The bridge
+#     runs IN-PROCESS inside GTA5.exe, so it can SetForegroundWindow its own window.
+#   - PostMessage(WM_KEYDOWN/UP): goes straight to GTA's WndProc, which ScriptHookVDotNet
+#     hooks. SHVDN KeyDown hotkeys (e.g. ELSC's F5 open key) and Insert see THIS path
+#     regardless of focus. Pure GTA-control nav does NOT. So: post=True for SHVDN hotkeys,
+#     scancode (default) for LemonUI navigation.
+# =============================================================================
+
+# name -> (virtual-key code, is-extended-key)
+_KEYMAP = {
+    "up": (0x26, True), "down": (0x28, True), "left": (0x25, True), "right": (0x27, True),
+    "enter": (0x0D, False), "return": (0x0D, False), "select": (0x0D, False), "accept": (0x0D, False),
+    "back": (0x08, False), "backspace": (0x08, False), "cancel": (0x08, False),
+    "esc": (0x1B, False), "escape": (0x1B, False), "space": (0x20, False), "tab": (0x09, False),
+    "insert": (0x2D, True), "delete": (0x2E, True), "home": (0x24, True), "end": (0x23, True),
+    "numpad8": (0x68, False), "numpad2": (0x62, False), "numpad4": (0x64, False),
+    "numpad6": (0x66, False), "numpad5": (0x65, False), "numpadenter": (0x0D, True),
+    "f1": (0x70, False), "f2": (0x71, False), "f3": (0x72, False), "f4": (0x73, False),
+    "f5": (0x74, False), "f6": (0x75, False), "f7": (0x76, False), "f8": (0x77, False),
+    "f9": (0x78, False), "f10": (0x79, False), "f11": (0x7A, False), "f12": (0x7B, False),
+}
+
+
+def _resolve_key(name):
+    """Map a friendly key name to (vk, extended). Single chars A-Z / 0-9 map by code."""
+    n = str(name).strip().lower()
+    if n in _KEYMAP:
+        return _KEYMAP[n]
+    if len(n) == 1:
+        ch = n.upper()
+        if "A" <= ch <= "Z" or "0" <= ch <= "9":
+            return (ord(ch), False)
+    return None
+
+
+def handle_send_keys(params: dict) -> dict:
+    """Inject one or more key presses into GTA so Claude can drive mod menus and reload.
+    params:
+      keys: list of key names (or 'key': single name)   e.g. ["f5","down","down","enter"]
+      delay_ms: gap between presses (default 180) - menus need time to animate/process
+      hold_ms:  key-down hold (default 40)
+      post:     also PostMessage to the GTA WndProc (set True for SHVDN hotkeys: F5 open, Insert)
+      focus:    SetForegroundWindow(GTA) first (default True) - REQUIRED for LemonUI nav
+    Navigation (arrows/enter/back) drives LemonUI only when GTA is the foreground window."""
+    try:
+        u = ctypes.windll.user32
+        KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE = 0x0001, 0x0002, 0x0008
+        WM_KEYDOWN, WM_KEYUP = 0x0100, 0x0101
+
+        keys = params.get("keys")
+        if keys is None and params.get("key") is not None:
+            keys = params.get("key")
+        if isinstance(keys, str):
+            keys = [keys]
+        if not keys:
+            return {"error": "send_keys: provide 'key' (str) or 'keys' (list)"}
+
+        delay = float(params.get("delay_ms", 180)) / 1000.0
+        hold = float(params.get("hold_ms", 40)) / 1000.0
+        use_post = bool(params.get("post", False))
+        focus = params.get("focus", True)
+
+        hwnd = u.FindWindowW("grcWindow", None) or u.FindWindowW(None, "Grand Theft Auto V")
+        if focus and hwnd:
+            try:
+                u.SetForegroundWindow(hwnd)
+                time.sleep(0.05)
+            except Exception:
+                pass
+
+        sent = []
+        for k in keys:
+            rk = _resolve_key(k)
+            if rk is None:
+                sent.append({"key": k, "error": "unknown key"})
+                continue
+            vk, ext = rk
+            scan = u.MapVirtualKeyW(vk, 0) & 0xFF
+            down = KEYEVENTF_SCANCODE | (KEYEVENTF_EXTENDEDKEY if ext else 0)
+            up = down | KEYEVENTF_KEYUP
+            # OS-level scancode (DirectInput-visible -> drives LemonUI nav when GTA foreground)
+            u.keybd_event(vk, scan, down, 0)
+            time.sleep(hold)
+            u.keybd_event(vk, scan, up, 0)
+            # Optional WndProc path for SHVDN-hooked hotkeys (menu open, Insert reload)
+            if use_post and hwnd:
+                ext_l = (1 << 24) if ext else 0
+                u.PostMessageW(hwnd, WM_KEYDOWN, vk, (scan << 16) | ext_l | 1)
+                u.PostMessageW(hwnd, WM_KEYUP, vk, (scan << 16) | ext_l | (0b11 << 30) | 1)
+            sent.append({"key": k, "vk": hex(vk), "ext": ext})
+            time.sleep(delay)
+
+        log_message("info", "send_keys: %s (hwnd=%s post=%s)" % ([s.get("key") for s in sent], hwnd, use_post))
+        return {"success": True, "hwnd": int(hwnd or 0), "sent": sent,
+                "note": "LemonUI nav requires GTA foreground; F5/Insert also use post=True."}
+    except Exception as e:
+        return {"error": f"send_keys failed: {e}"}
+
+
+def handle_reload_bridge(params: dict) -> dict:
+    """Reload PyLoaderV/bridge.py itself by sending F9 (what the human used to press by hand).
+    Fire-and-forget: PyLoaderV reloads on its next tick, so THIS socket connection will drop -
+    that disconnect is EXPECTED and means success. Reconnect after ~1s."""
+    res = handle_send_keys({"keys": ["f9"], "post": True, "focus": True, "delay_ms": 0, "hold_ms": 50})
+    res["message"] = "Sent F9 (PyLoaderV reload). Socket will drop - reconnect in ~1s."
+    return res
+
+
+# =============================================================================
 # Engine-function calling + runtime DLC (rpf) mount/reload
 # call_function = call an arbitrary engine function (NOT a script native) with a typed signature.
 # Runs on the game thread (handlers dispatch via enqueue_work); validates the target is executable.
@@ -2944,6 +3174,10 @@ def handle_reload_content_changeset(params: dict) -> dict:
 COMMANDS = {
     "status": handle_status,
     "reload_scripts": handle_reload_scripts,
+    "send_keys": handle_send_keys,
+    "reload_bridge": handle_reload_bridge,
+    "hud_message": handle_hud_message,
+    "set_hud_text": handle_set_hud_text,
     "read": handle_read,
     "write": handle_write,
     "snapshot": handle_snapshot,
@@ -2962,6 +3196,7 @@ COMMANDS = {
     "set_continuous": handle_set_continuous,
     "clear_continuous": handle_clear_continuous,
     "list_continuous": handle_list_continuous,
+    "set_raw_continuous": handle_set_raw_continuous,
     # Visual wheel probing (DrawHandler/StreamRenderGfx path)
     "probe_drawhandler": handle_probe_drawhandler,
     "scan_structure": handle_scan_structure,
@@ -3043,6 +3278,7 @@ _OFFTHREAD_COMMANDS = {
     "scan_pattern", "find_string", "find_xrefs", "resolve_rip_relative",
     "set_goal", "note_finding", "get_findings", "clear_findings",
     "get_crash_logs", "get_chat_history", "has_pending_messages", "get_pending_messages",
+    "send_keys", "reload_bridge",
 }
 _offthread_lock = threading.Lock()
 
@@ -3069,7 +3305,9 @@ def _run_offthread(handler, params):
 # PyLoaderV re-runs this script on F9 but does NOT clear sys.modules, so a plain `import` would keep a
 # stale cached copy of the RE modules. Drop them first so every F9 hot-reloads the toolkit from disk.
 import sys as _sys
-for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch"):
+for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch",
+          "gta_catalog", "gta_recipes", "vehicle_tuning", "world_sense", "agent_actions", "mission_sense",
+          "commentary"):
     _sys.modules.pop(_m, None)
 try:
     import re_tools
@@ -3108,6 +3346,61 @@ try:
     log_message("info", "re_tools_patch (code mod) loaded")
 except Exception as e:
     log_message("error", f"re_tools_patch load failed: {e}")
+
+# ---- Build-anything layer: name<->hash catalogs, queryable recipes, native vehicle tuning ----------
+try:
+    import gta_catalog as _cat
+    COMMANDS.update(_cat.CAT_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _cat.CAT_OFFTHREAD             # pure data -> paused-safe
+    log_message("info", f"gta_catalog loaded ({_cat._SUMMARY})")
+except Exception as e:
+    log_message("error", f"gta_catalog load failed: {e}")
+try:
+    import gta_recipes as _rec
+    COMMANDS.update(_rec.REC_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _rec.REC_OFFTHREAD             # pure data -> paused-safe
+    log_message("info", f"gta_recipes loaded ({len(_rec.RECIPES)} recipes)")
+except Exception as e:
+    log_message("error", f"gta_recipes load failed: {e}")
+try:
+    import vehicle_tuning as _vt
+    _vt.bind(globals())                                  # reuses the verified native caller + memory prims
+    COMMANDS.update(_vt.TUNING_COMMANDS)                 # native-touching -> NOT off-thread (except field list)
+    _OFFTHREAD_COMMANDS |= _vt.TUNING_OFFTHREAD
+    log_message("info", "vehicle_tuning (native fitment + handling) loaded")
+except Exception as e:
+    log_message("error", f"vehicle_tuning load failed: {e}")
+try:
+    import world_sense as _ws
+    _ws.bind(globals())                                  # reuses native caller + entity_address/read_float + pools
+    COMMANDS.update(_ws.WORLD_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _ws.WORLD_OFFTHREAD
+    log_message("info", f"world_sense loaded ({_ws._NLM} landmarks)")
+except Exception as e:
+    log_message("error", f"world_sense load failed: {e}")
+try:
+    import agent_actions as _aa
+    _aa.bind(globals())                                  # Executor verbs over the ped-AI task natives
+    COMMANDS.update(_aa.ACTION_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _aa.ACTION_OFFTHREAD          # only get_intent/list_verbs are pure-state
+    log_message("info", f"agent_actions loaded ({len(_aa.VERBS)} verbs)")
+except Exception as e:
+    log_message("error", f"agent_actions load failed: {e}")
+try:
+    import mission_sense as _ms
+    _ms.bind(globals())                                  # blip-based objective sensing
+    COMMANDS.update(_ms.MISSION_COMMANDS)
+    log_message("info", "mission_sense (objective sensor) loaded")
+except Exception as e:
+    log_message("error", f"mission_sense load failed: {e}")
+try:
+    import commentary as _cm
+    _cm.bind(globals())                                  # protagonist voice reactions (native speech)
+    COMMANDS.update(_cm.COMMENTARY_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _cm.COMMENTARY_OFFTHREAD
+    log_message("info", f"commentary loaded ({_cm._N} events)")
+except Exception as e:
+    log_message("error", f"commentary load failed: {e}")
 
 def handle_client(conn: socket.socket, addr):
     """Handle a single client connection (one request/response)."""
@@ -3191,6 +3484,7 @@ def socket_server_thread():
     while _server_running:
         try:
             conn, addr = server.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)  # no Nagle delay on the length-prefixed RPC
             threading.Thread(target=handle_client, args=(conn, addr), daemon=True).start()
         except socket.timeout:
             continue
@@ -3319,6 +3613,12 @@ def on_tick():
 
     # Apply continuous writes every frame
     apply_continuous_writes()
+
+    # Draw persistent objective text (setting-independent) every frame
+    try:
+        _draw_hud_text()
+    except Exception as _e:
+        _hud_text["err"] = f"{type(_e).__name__}: {_e}"
 
     # Display input prompt every frame when in input mode
     if _input_mode:

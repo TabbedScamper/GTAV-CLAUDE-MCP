@@ -35,6 +35,11 @@ radio/ClaudeRadio/bin/*
 radio/ClaudeRadio/bin/Release/*
 !radio/ClaudeRadio/bin/Release/ClaudeRadio.dll
 
+# ---- Harvested reference mods (Examples/) — other people's copyrighted code; study only, never publish ----
+# Keep the README + manifest (our index); ignore the downloaded sources & decompiled output.
+Examples/_sources/
+Examples/_decompiled/
+
 # ---- Large / derived / vendored data (machine-local; regenerated or downloaded) ----
 # Decoded Rockstar game data + JOAAT cache (large, not ours to publish)
 gtadata/
@@ -64,3 +69,6 @@ tools/_session-reconstruction-*/
 
 # atomic-write / editor temp leftovers
 *.tmp.*
+
+# Local Claude tooling (commands/skills) — local only
+.claude/

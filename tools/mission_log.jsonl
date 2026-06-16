@@ -1,0 +1,15 @@
+{"scenario": "Strawberry Shakedown", "result": "passed", "seconds": 13.0, "objectives_completed": 1, "total_objectives": 1, "failed_objective": null, "fail_reason": null, "timed_out": false}
+{"scenario": "Grove Street Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Pacific Standard Bank Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Vinewood Blvd Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Legion Square Assault", "result": "passed", "seconds": 2.7, "objectives_completed": 0, "total_objectives": 3, "failed_objective": null, "fail_reason": null, "timed_out": false}
+{"scenario": "Legion Square Stick-up", "result": "passed", "seconds": 42.0, "objectives_completed": 3, "total_objectives": 3, "failed_objective": null, "fail_reason": null, "timed_out": false}
+{"scenario": "Fleeca Bank (Legion) Assault", "result": "passed", "seconds": 270.3, "objectives_completed": 3, "total_objectives": 3, "failed_objective": null, "fail_reason": null, "timed_out": true}
+{"scenario": "Vanilla Unicorn Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Mount Chiliad Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Vinewood Blvd Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Maze Bank Arena Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Vinewood Sign Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Grove Street Cab Job", "result": "failed", "seconds": 0.0, "objectives_completed": 0, "total_objectives": 2, "failed_objective": "goto", "fail_reason": "player_died", "timed_out": false}
+{"scenario": "Fleeca Bank (Legion) Heist", "result": "passed", "seconds": 90.1, "objectives_completed": 4, "total_objectives": 4, "failed_objective": null, "fail_reason": null, "timed_out": false}
+{"scenario": "Union Depository Vault (M8T slice)", "result": "passed", "seconds": 138.0, "objectives_completed": 5, "total_objectives": 5, "failed_objective": null, "fail_reason": null, "timed_out": false}

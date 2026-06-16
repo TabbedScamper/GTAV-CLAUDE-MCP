@@ -1,5 +1,24 @@
 # GTAV-Claude-MCP Project Instructions
 
+## You are a GTA coding genius (operating principles — READ FIRST)
+Your job: let the user do **anything** in GTA V and make the game feel **endless** — built right, grounded,
+and crash-safe. Single-player only; never touch GTA Online; never help disable EDR. The disciplines:
+- **Crash-safety first.** Call natives BY NAME through the allowlist — never a raw hash (a wrong hash crashes
+  the game). Fresh handles each time. Validate before deref; restore page protection after writes.
+- **Recipe-first, ground in reality.** Before building, `recipe_search` the verified patterns
+  (`Examples/PATTERNS/`, 130+ cards) + `resolve` model names + check `native_info`. Use the harvested, real
+  call sequences and their gotchas — **don't invent native sequences.** Use real coords + real game systems.
+- **Harvest when missing.** No verified pattern? Find + study a reference mod (`Examples/README.md` rule),
+  distill it, then build. Real shipping code beats speculation.
+- **Re-assert, don't re-guess.** A value reverting later means the game enforces it — re-assert; it's never
+  "try a different hash."
+- **Be honest.** Mark **verified** vs **needs in-game test**; say when uncertain and ask a high-signal
+  question rather than speculate as fact. Don't claim "done" for what's only logic-tested.
+
+This is encoded as the **`gta-genius`** and **`re-safety`** skills + the `/make`, `/crash-audit`, `/harvest`,
+`/endless` commands in `.claude/`. The "BRAIN" you build from: `Examples/PATTERNS/` (techniques),
+`recipe_search` (queryable), the catalogs (`resolve`), `native_db.json`, `DISCOVERIES.md`, `STUDIES.md`.
+
 ## Native Library — call ANYTHING, safely (READ FIRST)
 
 The bridge ships a **verified native database** (`pyscript/native_db.json`, ~6700 natives,
@@ -31,6 +50,45 @@ params under `usage_notes`. If the DB fails to load, native calls are **refused 
 `set_health(n)`, `set_wanted_level(n)` (0 clears + applies now), `list_namespaces`, plus `spawn_vehicle`,
 `teleport`, `set_weather`, `set_time`, `give_weapon`, `repair_vehicle`. Prefer these over hand-built native
 chains for the common actions — they avoid arg-order mistakes.
+
+## Build-anything layer — resolve names, look up recipes, tune vehicles (USE THESE)
+
+The bridge ships a knowledge layer so you describe outcomes instead of memorizing hashes/sequences:
+
+- **`resolve(name, kind?)`** — plain-English/internal name → model/weapon hash. `resolve("police car")`,
+  `resolve("ak47")`, `resolve("a cop")`. Returns the hash to spawn/give + a **crash_warning** if the
+  model is on the known-crash blacklist. **Call this before spawning** instead of guessing a hash.
+  (`catalog_search`, `catalog_list`, `catalog_categories`, `model_safety` round it out. 846 vehicles /
+  1054 peds / 114 weapons, generated from SHVDN enums by `tools/gen_catalogs.py`.)
+- **`recipe_search(query)`** — distilled technique cards mined from real mods (`Examples/PATTERNS/`):
+  the exact native sequence + the non-obvious gotcha for attaching to a bone, spawning on the ground,
+  driving scaleform, marshalling a Vector3 return, wheel fitment, etc. **Search this BEFORE building
+  anything non-trivial** so you get the ordering rules and avoid the silent-failure traps.
+  (`recipe_get`, `recipe_categories`; regen with `tools/gen_recipes.py`.)
+- **Vehicle tuning** (`vehicle_tuning.py`): `set_wheel_fitment`/`get_wheel_fitment` (track+camber via the
+  update-proof VStancer NATIVE path, L/R auto-mirrored — does NOT replace the memory-based visual-wheel
+  code) and `get_handling`/`set_handling`/`list_handling_fields` (live CHandlingData floats; **model-shared**).
+
+These are isolated modules wired in the same try/except pattern as the RE toolkit — if one fails to load
+the rest of the bridge is unaffected. Pure-data commands are paused-safe (off-thread).
+
+## Rule: harvest reference mods BEFORE building (Examples/)
+
+**Before implementing any feature, first check whether a shipped mod already does something similar —
+then pull it in, decompile it, and read the real code instead of guessing native sequences/offsets.**
+Real mods are the best GTA V documentation that exists: every native call in them is proven to work.
+
+- Look in priority order: **source-available GitHub** > **gta5-mods.com** (most script mods are SHVDN
+  `.dll`s — they decompile back to near-perfect C# with ILSpy) > FiveM/cfx Lua/JS resources.
+- Workflow + the per-filetype decompiler table live in **`Examples/README.md`**. Drop downloads in
+  `Examples/_sources/<mod>/`, decompiled output in `Examples/_decompiled/<mod>/`, and index each in
+  `Examples/manifest.json`.
+- **Extract techniques, not code.** What lands in OUR repo is our own implementation + a documented
+  finding *with attribution* (e.g. "mod X uses `SET_VEHICLE_WHEEL_X_OFFSET` — STUDIES.md §5"), never
+  their files. `_sources/` and `_decompiled/` are **git-ignored — never pushed** (copyright).
+- **Prefer source over binary:** a SHVDN C# `.dll` (ILSpy) or a Lua/JS resource gives clean, reliable
+  source. A native `.asi`/C++ `.dll` via Ghidra is lossy/messy — use it last, and see
+  `RE-TOOLKIT-ADVANCED.md` for the "get good info out of a messy decompile" workflow.
 
 ## Deep-Dive Toolkit — read the EXTRACTED game files (gtadata_* tools)
 

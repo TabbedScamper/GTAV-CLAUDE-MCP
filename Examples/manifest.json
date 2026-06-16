@@ -1,0 +1,256 @@
+{
+  "$schema_note": "Index of harvested reference mods. One entry per mod. _sources/ and _decompiled/ are git-ignored; this manifest + PATTERNS/ + FINDINGS-*.md ARE committed (our writeup, with attribution). See README.md and PATTERNS/README.md.",
+  "examples": [
+    {
+      "name": "vstancer",
+      "url": "https://github.com/carmineos/fivem-vstancer",
+      "author": "Carmine Giugliano (carmineos), based on ikt's VStancer",
+      "license": "MIT",
+      "type": "C# source (FiveM)",
+      "why": "Wheel fitment / stance for ExtendedLSC — native-only path, no memory.",
+      "findings": "FINDINGS-wheels-and-handling.md (A); PATTERNS/02 (wheel fitment card).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "handling-editor-ikt",
+      "url": "https://github.com/ikt32/GTAVHandlingEditor",
+      "author": "ikt (ikt32 / E66666666)",
+      "license": "none stated — reference/study only, do not redistribute",
+      "type": "C++ source (ScriptHookV ASI)",
+      "why": "Live handling tuning + canonical CHandlingData field map + pattern-scanned handling offset.",
+      "findings": "FINDINGS-wheels-and-handling.md (B); PATTERNS/02.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "manualtransmission-ikt",
+      "url": "https://github.com/E66666666/GTAVManualTransmission",
+      "author": "ikt (E66666666)",
+      "license": "none stated — reference/study only",
+      "type": "C++ source (ScriptHookV ASI)",
+      "why": "Richest live vehicle-drivetrain memory source: gears/RPM/clutch/throttle/turbo/wheels, pattern-scan + disp32 extraction, version branching, patch-the-writer.",
+      "findings": "PATTERNS/02-vehicle-dynamics.md (most cards).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "lemonui",
+      "url": "https://github.com/justalemon/LemonUI",
+      "author": "Lemon (justalemon)",
+      "license": "MIT (verify in repo)",
+      "type": "C# source (SHVDN/FiveM/RPH UI lib)",
+      "why": "Modern HUD/menu reference: coordinate normalization, text sandwich, texture streaming, GFX_ALIGN, controls, scaleform, sound.",
+      "findings": "PATTERNS/03-ui-hud-scaleform.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "nativeui-guad",
+      "url": "https://github.com/Guad/NativeUI",
+      "author": "Guad",
+      "license": "MIT (verify in repo)",
+      "type": "C# source (SHVDN menu lib, classic)",
+      "why": "Classic menu lib — hand-rolled resolution/safezone math, control whitelist, long-string splitting.",
+      "findings": "PATTERNS/03-ui-hud-scaleform.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "ragenativeui",
+      "url": "https://github.com/alexguirre/RAGENativeUI",
+      "author": "alexguirre",
+      "license": "MIT (verify in repo)",
+      "type": "C# source (RAGEPluginHook UI lib)",
+      "why": "Best scaleform reference: instructional buttons rebuild order, async return values, big-message shards, timer bars, GFX_ALIGN.",
+      "findings": "PATTERNS/03-ui-hud-scaleform.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "menubase-ikt",
+      "url": "https://github.com/E66666666/GTAVMenuBase",
+      "author": "ikt (E66666666)",
+      "license": "none stated — reference/study only",
+      "type": "C++ source (ScriptHookV menu lib)",
+      "why": "C++ scaleform method-call sequence + menu control reading.",
+      "findings": "PATTERNS/03-ui-hud-scaleform.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "mapeditor-guad",
+      "url": "https://github.com/Guad/MapEditor",
+      "author": "Guad",
+      "license": "MIT (verify in repo)",
+      "type": "C# source (SHVDN scene editor)",
+      "why": "Spawn lifecycle, reference-counted model release, prop-cap/yield throttling, Euler+quaternion storage, Menyoo-interop serializer.",
+      "findings": "PATTERNS/04-spawning-world-scenes.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "menyoo",
+      "url": "https://github.com/MAFINS/MenyooSP",
+      "author": "MAFINS (archived; active fork itsjustcurtis)",
+      "license": "GPL-3.0",
+      "type": "C++ source (ScriptHookV kitchen-sink trainer)",
+      "why": "Exact native names/arg order for streaming, create/persist/delete, attachment, ground-snap, and the full Spooner XML scene schema + attachment remap.",
+      "findings": "PATTERNS/04-spawning-world-scenes.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "shvdn-api",
+      "url": "https://github.com/scripthookvdotnet/scripthookvdotnet",
+      "author": "SHVDN community (crosire lineage)",
+      "license": "zlib",
+      "type": "C# source (the .NET script runtime)",
+      "why": "Reference native-invoker + the canonical memory map: arg/return marshalling (FixVectors), pools, handle<->address, AOB/RIP idioms, model hash table, globals, BMH scanner.",
+      "findings": "PATTERNS/01-native-invocation-and-memory.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "gta5view-tool",
+      "url": "https://github.com/SyDevTeam/gta5view",
+      "author": "SyDevTeam",
+      "license": "GPL-3.0 (verify in repo)",
+      "type": "C++/Qt tool (Snapmatic + SP savegame viewer)",
+      "why": "SP savegame header format (260-byte block, magic 00000001) + RagePhoto JPEG/JSON/TITL/DESC layout. Note: does NOT decode the encrypted save body (money/stats).",
+      "findings": "PATTERNS/01-native-invocation-and-memory.md (save-format card).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "rpemotes",
+      "url": "https://github.com/alberttheprince/rpemotes-reborn",
+      "author": "alberttheprince + contributors",
+      "license": "GPL-3.0 (verify in repo)",
+      "type": "Lua source (FiveM) — the best-labeled emote DB",
+      "why": "Animation: labeled dict+clip+label+prop+flags DB; the prop+bone+anim recipe; scenarios/paired/facial/clipsets. Seeded catalogs/anims.json.",
+      "findings": "PATTERNS/05-animation.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "dpemotes",
+      "url": "https://github.com/andristum/dpemotes",
+      "author": "andristum",
+      "license": "GPL-3.0 (verify in repo)",
+      "type": "Lua source (FiveM) — emote list (secondary)",
+      "why": "Animation: secondary emote DB cross-reference.",
+      "findings": "PATTERNS/05-animation.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "betrainer",
+      "url": "https://github.com/betenner/betrainer",
+      "author": "betenner",
+      "license": "see repo",
+      "type": "C# source (SHVDN trainer)",
+      "why": "Reference C# trainer (animation feature reference). Note: no scripted-camera usage found.",
+      "findings": "PATTERNS/05-animation.md (cross-ref).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "sollumz",
+      "url": "https://github.com/Sollumz/Sollumz",
+      "author": "Sollumz team",
+      "license": "MIT",
+      "type": "Python source (Blender add-on) — GTA V asset pipeline",
+      "why": "AUTHORING custom animations: the .ycd data model (track-id->channel map, bone-by-hash, mover/root-motion, quaternion quantization, clips/tags, retarget) + the export workflow. The 'make your own animations' half.",
+      "findings": "PATTERNS/07-custom-animation-authoring.md; docs/CUSTOM-ANIMATIONS.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "ptfx-mod",
+      "url": "https://github.com/nitanmarcel/GTA-V-Particle-Effects",
+      "author": "nitanmarcel",
+      "license": "see repo",
+      "type": "C# source (SHVDN particle mod)",
+      "why": "PTFX: the asset-load + per-spawn USE_PARTICLE_FX_ASSET rebind, looped-vs-nonlooped, the DurtyFree particleEffectsCompact.json data source.",
+      "findings": "PATTERNS/08-ptfx-particles.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "gangwar",
+      "url": "https://github.com/David-Lor/GTAV-SimpleGangWar",
+      "author": "David-Lor",
+      "license": "see repo",
+      "type": "C# source (SHVDN two-faction gang war)",
+      "why": "Relationships + combat + squads: the full relationship-group recipe (both directions), the 'why won't my ped fight' fix, per-ped battle setup, seeing-range for cross-map aggro.",
+      "findings": "PATTERNS/10-relationships-combat-squads.md (+ 09 task usage).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "m8t-heists",
+      "url": "https://www.gta5-mods.com/users/M8T/files",
+      "author": "M8T",
+      "license": "all-rights-reserved (gta5-mods) - decompiled for private study only, NEVER republished",
+      "type": "SHVDN .NET DLLs -> decompiled C# (ILSpy) [Lombank, Uptown, StashHouse, GTA6, Nightclubs, Casino]",
+      "obtained": "downloaded zips -> extracted .dll -> ilspycmd 8.2.0.7535 -> Examples/_decompiled/m8t-* (git-ignored)",
+      "why": "The REAL shipped GTAO-style heist framework: onTick parallel int state machines, objective blip (colour-as-state) + route + ShowSubtitle text, marker+distance+E triggers, completion tests, timer->cops, cutscene (fade/REQUEST_CUTSCENE/SYNCHRONIZED_SCENE), reward, cleanup. Grounds mission_runner.py + PATTERNS/12.",
+      "findings": "PATTERNS/12-m8t-heist-framework.md.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "m8t-heist-corpus",
+      "url": "https://www.gta5-mods.com/users/M8T (35 mod packages, see _sources/M8T/)",
+      "author": "M8T",
+      "license": "none stated — reference/study only, never redistribute",
+      "type": "SHVDN C# DLLs (ILSpy-decompiled, _decompiled/m8t-*)",
+      "why": "The definitive shipped SP-heist corpus: mission skeleton, synced-scene anims, interiors/IPL/entity sets, prop doors, custom voice wavs + ped speech, music events, enemy/relationship AI, loot-grab FSM.",
+      "findings": "PATTERNS/12 (skeleton, 6 mods) + PATTERNS/14 (deep dive, full 35-mod corpus, 2026-06-12); hashes verified against native_db.json.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "cayo-perico-sp",
+      "url": "gta5-mods.com (Cayo Perico Heist in SP v11.0)",
+      "author": "HKH191 / community",
+      "license": "reference/study only",
+      "type": "SHVDN C# DLLs (ILSpy)",
+      "why": "Gold-standard player-driven SP heist: marker+ProgressE interactions, frame-perfect synced-scene animations (ped+props+doors), SmartGuards stealth vision AI.",
+      "findings": "PATTERNS/15 (player-driven interactions, synced scenes, walk-in doors, guard vision).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "enable-all-interiors",
+      "url": "gta5-mods.com (Enable All Interiors 43.2)",
+      "author": "community",
+      "license": "reference/study only",
+      "type": "SHVDN C# DLL (ILSpy)",
+      "why": "How interiors are made walk-in: IPL load + entity sets + door-system auto-unlock; vault door via SET_VAULT_DOOR_OPEN entity set.",
+      "findings": "PATTERNS/15 (walk-in doors card).",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "hkh-mission-creator",
+      "url": "gta5-mods.com (HKH MissionHeist Creator 1.1.1)",
+      "author": "HKH191",
+      "license": "reference/study only",
+      "type": "SHVDN C# DLL (ILSpy)",
+      "why": "Data-driven mission BUILDER: 105 objective types, INI schema, runtime interpreter, Menyoo map. The template for our auto-generator.",
+      "findings": "PATTERNS/16.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "hkh-modhelper",
+      "url": "gta5-mods.com (HKH Mod Helper)",
+      "author": "HKH191",
+      "license": "reference/study only",
+      "type": "SHVDN C# DLL (ILSpy)",
+      "why": "Shared toolkit (271 helpers): mission/heist scaleform screens, 13 hacking minigames, money, streaming, control, geometry, attach, audio.",
+      "findings": "PATTERNS/17.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "hkh-hacking-minigames",
+      "url": "gta5-mods.com (Hacking Minigames in SP)",
+      "author": "HKH191",
+      "license": "reference/study only",
+      "type": "SHVDN C# DLL (ILSpy)",
+      "why": "13 real GTAO hacking minigames driving real scaleform UIs; uniform HackFinishedID completion contract; reusable as heist beats.",
+      "findings": "PATTERNS/17.",
+      "date": "2026-06-12"
+    },
+    {
+      "name": "hkh191-catalog",
+      "url": "Examples/_sources/HKH191/ (~128 mods)",
+      "author": "HKH191",
+      "license": "reference/study only",
+      "type": "SHVDN C# DLL catalog",
+      "why": "Index of the full HKH191 SP-mod catalog by capability — what to harvest on demand.",
+      "findings": "Examples/HKH191-CATALOG.md.",
+      "date": "2026-06-12"
+    }
+  ]
+}
