@@ -224,6 +224,11 @@ namespace ClaudeBridge
                 case "list_patches": return ListPatches(p);
                 case "restore_patch": return RestorePatch(p);
                 case "restore_all_patches": return RestoreAllPatches(p);
+                // ── decode "what does this memory do" (differential RE, no eyes needed) ──
+                case "snapshot": return Snapshot(p);
+                case "diff": return Diff(p);
+                case "watch": return Watch(p);
+                case "correlate": return Correlate(p);
                 case "reload_scripts": SendKey(0x2D); return "ok";   // VK_INSERT — SHVDN reload
                 case "send_keys": SendKeyName(Str(p, "keys")); return "ok";
                 default: throw new Exception("unknown command: " + cmd);
