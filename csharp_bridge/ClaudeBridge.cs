@@ -196,6 +196,9 @@ namespace ClaudeBridge
                 case "hud_message": return HudMessage(p);
                 case "set_overlay": return SetOverlay(p);
                 case "get_chat_history": return GetChatHistory(p);
+                case "panel":   // show/hide the in-game chat panel without a keypress
+                    ClaudeChatPanel.CmdVisible = (p != null && p.TryGetValue("show", out var sh) && !Convert.ToBoolean(sh)) ? 0 : 1;
+                    return new Dictionary<string, object> { ["success"] = true, ["visible"] = ClaudeChatPanel.CmdVisible == 1 };
                 // ── high-level action verbs (spawn / teleport / weather / etc.) ──
                 case "get_world_state": return GetWorldState(p);
                 case "get_context": return new Dictionary<string, object> { ["success"] = true, ["context"] = GetWorldState(p) };

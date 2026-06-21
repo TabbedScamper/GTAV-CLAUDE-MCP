@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 using GTA;
 using GTA.UI;
@@ -22,6 +23,11 @@ namespace ClaudeBridge
         int _reloadTimer = 0;
         int _lastTxLen = -1;
 
+        // Configurable keys (default F8 toggle / F9 chat) — F10/F11/F12 collide with GPU/Steam overlays.
+        Keys _toggleKey = Keys.F8, _chatKey = Keys.F9;
+        // Socket-driven visibility so the panel can be shown without a keypress: -1 no-op, 0 hide, 1 show.
+        internal static volatile int CmdVisible = -1;
+
         const int VISIBLE_LINES = 30;
         const float LINE_PITCH = 24f, TEXT_SCALE = 0.34f, PANEL_W = 700f, HEADER_H = 36f, FOOTER_H = 30f, PAD = 12f;
         const int WRAP_CHARS = 58;
@@ -33,9 +39,34 @@ namespace ClaudeBridge
 
         public ClaudeChatPanel()
         {
+            LoadConfig();
             BuildUI();
             Tick += OnTick;
             KeyDown += OnKeyDown;
+        }
+
+        // Read scripts\ClaudeBridge.ini [Keys] TogglePanel / Chat (creates it with defaults if missing).
+        void LoadConfig()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "scripts", "ClaudeBridge.ini");
+                if (!File.Exists(path))
+                    File.WriteAllText(path,
+                        "[Keys]\n; .NET key names (F1..F12, Insert, Home, OemTilde, NumPad0, ...).\n" +
+                        "; Avoid keys your GPU/Steam/Windows overlay uses (F10/F11/F12 often collide).\n" +
+                        "TogglePanel=F8\nChat=F9\n");
+                foreach (var raw in File.ReadAllLines(path))
+                {
+                    var line = raw.Trim();
+                    if (line.Length == 0 || line.StartsWith(";") || line.StartsWith("[") || !line.Contains("=")) continue;
+                    var kv = line.Split(new[] { '=' }, 2);
+                    string k = kv[0].Trim(), v = kv[1].Trim();
+                    if (k.Equals("TogglePanel", StringComparison.OrdinalIgnoreCase) && Enum.TryParse<Keys>(v, true, out var t)) _toggleKey = t;
+                    else if (k.Equals("Chat", StringComparison.OrdinalIgnoreCase) && Enum.TryParse<Keys>(v, true, out var c)) _chatKey = c;
+                }
+            }
+            catch { }
         }
 
         void BuildUI()
@@ -46,7 +77,7 @@ namespace ClaudeBridge
             _track  = new ScaledRectangle(PointF.Empty, SizeF.Empty) { Color = Color.FromArgb(120, 70, 70, 95) };
             _thumb  = new ScaledRectangle(PointF.Empty, SizeF.Empty) { Color = Color.FromArgb(235, 150, 130, 210) };
             _title  = new ScaledText(PointF.Empty, "Claude", 0.4f, Font.ChaletLondon) { Color = Color.White, Outline = true };
-            _footerText = new ScaledText(PointF.Empty, "F10: chat   F11: close   PgUp/PgDn: scroll", 0.3f, Font.ChaletLondon)
+            _footerText = new ScaledText(PointF.Empty, $"{_chatKey}: chat   {_toggleKey}: close   PgUp/PgDn: scroll", 0.3f, Font.ChaletLondon)
             { Color = Color.FromArgb(255, 165, 165, 195) };
             _empty = new ScaledText(PointF.Empty, "Press F10 to talk to Claude.", 0.34f, Font.ChaletLondon)
             { Color = Color.Gray, Alignment = Alignment.Center };
@@ -57,6 +88,10 @@ namespace ClaudeBridge
 
         void OnTick(object sender, EventArgs e)
         {
+            // Apply any socket-driven show/hide (panel command) on the game thread.
+            int cv = CmdVisible;
+            if (cv >= 0) { CmdVisible = -1; _visible = cv == 1; if (_visible) Rebuild(); }
+
             if (!_visible) return;
             if (++_reloadTimer > 8) { _reloadTimer = 0; Rebuild(); }   // ~130ms
             Draw();
@@ -113,8 +148,8 @@ namespace ClaudeBridge
 
         void OnKeyDown(object sender, KeyEventArgs e)
         {
-            if (e.KeyCode == Keys.F11) { _visible = !_visible; if (_visible) Rebuild(); }
-            else if (e.KeyCode == Keys.F10)
+            if (e.KeyCode == _toggleKey) { _visible = !_visible; if (_visible) Rebuild(); }
+            else if (e.KeyCode == _chatKey)
             {
                 var input = Game.GetUserInput(WindowTitle.EnterMessage60, "", 240);
                 if (!string.IsNullOrWhiteSpace(input))
