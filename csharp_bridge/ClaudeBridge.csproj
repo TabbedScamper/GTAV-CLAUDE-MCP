@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    ClaudeBridge - a tiny SHVDN TCP bridge for driving GTA V from Python (native calls, memory reads, AOB scans).
+    Replaces the PyLoaderV-based pyscript/bridge.py: this runs under ScriptHookVDotNet (works on BOTH Legacy AND
+    Enhanced), so no PyLoaderV / embedded-Python dependency. Speaks the same length-prefixed JSON protocol on
+    127.0.0.1:27015 that dyno.py / the existing tooling already use.
+
+    Build:  dotnet build -c Release
+    Deploy: copy bin/Release/net48/ClaudeBridge.dll into <GTA>\scripts\  (Legacy or Enhanced), reload with Insert.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <OutputType>Library</OutputType>
+    <AssemblyName>ClaudeBridge</AssemblyName>
+    <RootNamespace>ClaudeBridge</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Same API on Legacy + Enhanced; the Enhanced SHVDN runtime supplies a compatible ScriptHookVDotNet3.dll. -->
+    <PackageReference Include="ScriptHookVDotNet3" Version="3.6.0" />
+    <!-- Harmony: safe MANAGED method patching (no x64 inline hooks) — used by the native-call profiler to
+         instrument SHVDN's own NativeFunc.InvokeInternal + Script.DoTick. 0Harmony.dll is deployed to scripts\. -->
+    <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+    <!-- JavaScriptSerializer for JSON (built into .NET Framework — no extra DLL to deploy). -->
+    <Reference Include="System.Web.Extensions" />
+  </ItemGroup>
+
+  <!--
+    Auto-deploy: copy the built DLL straight into the game's scripts\ folder, then reload in-game with Insert.
+    Override the target with:  dotnet build -c Release -p:GtaScriptsDir="D:\Path\To\GTA\scripts"
+    Non-fatal (ContinueOnError) so a build still succeeds if the game dir is missing/locked.
+  -->
+  <PropertyGroup>
+    <GtaScriptsDir Condition="'$(GtaScriptsDir)' == ''">C:\Program Files\Rockstar Games\Grand Theft Auto V Legacy\scripts</GtaScriptsDir>
+  </PropertyGroup>
+  <Target Name="DeployToGta" AfterTargets="Build">
+    <!-- ClaudeBridge.dll + its Harmony runtime dependency (0Harmony.dll). -->
+    <ItemGroup>
+      <DeployFiles Include="$(TargetPath)" />
+      <DeployFiles Include="$(OutDir)0Harmony.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(DeployFiles)" DestinationFolder="$(GtaScriptsDir)"
+          SkipUnchangedFiles="false" ContinueOnError="true"
+          Condition="Exists('$(GtaScriptsDir)')" />
+    <Message Importance="high" Text="Deployed @(DeployFiles->'%(Filename)%(Extension)', ', ') -> $(GtaScriptsDir)" Condition="Exists('$(GtaScriptsDir)')" />
+    <Warning Text="GtaScriptsDir not found: $(GtaScriptsDir) (skipped deploy)" Condition="!Exists('$(GtaScriptsDir)')" />
+  </Target>
+
+</Project>

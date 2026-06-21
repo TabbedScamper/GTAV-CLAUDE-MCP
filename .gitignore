@@ -78,3 +78,11 @@ tools/gta_modules.json
 tools/*.etl
 tools/*.etl.zip
 tools/PerfView*.exe
+
+# C# SHVDN bridge build output (source committed; binaries rebuilt via dotnet build)
+csharp_bridge/bin/
+csharp_bridge/obj/
+
+# Perf-capture kit: source committed; dist/ is assembled artifacts, report is local
+tools/perf_capture/dist/
+tools/perf_capture/ELSC_perf_report.txt
