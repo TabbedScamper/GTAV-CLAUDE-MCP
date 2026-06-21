@@ -48,7 +48,7 @@ namespace ClaudeBridge
             catch (Exception ex) { SafeLog("start error: " + ex); }
 
             Tick += OnTick;
-            Aborted += (s, e) => { _stop = true; try { _listener?.Stop(); } catch { } try { TeardownProfiler(); } catch { } try { TeardownMethodProfiler(); } catch { } };
+            Aborted += (s, e) => { _stop = true; try { _listener?.Stop(); } catch { } try { TeardownProfiler(); } catch { } try { TeardownMethodProfiler(); } catch { } try { RestoreAllPatches(null); } catch { } };
 
             // Install the per-frame profiler (Harmony patches on SHVDN's own tick + native invoker). Best-effort:
             // a failure here leaves the rest of the bridge fully functional (profiler_status reports the error).
@@ -215,6 +215,15 @@ namespace ClaudeBridge
                 case "nearby_vehicles": return NearbyVehicles(p);
                 case "nearby_peds": return NearbyPeds(p);
                 case "commands": return Commands(p);
+                // ── RE-grade memory editing (safe, reversible) ──
+                case "validate_address": return ValidateAddress(p);
+                case "read_chain": return ReadChain(p);
+                case "resolve_rip_relative": return ResolveRipRelative(p);
+                case "patch_bytes": return PatchBytes(p);
+                case "nop": return Nop(p);
+                case "list_patches": return ListPatches(p);
+                case "restore_patch": return RestorePatch(p);
+                case "restore_all_patches": return RestoreAllPatches(p);
                 case "reload_scripts": SendKey(0x2D); return "ok";   // VK_INSERT — SHVDN reload
                 case "send_keys": SendKeyName(Str(p, "keys")); return "ok";
                 default: throw new Exception("unknown command: " + cmd);
