@@ -211,6 +211,7 @@ namespace ClaudeBridge
                 case "explosion": return Explosion(p);
                 case "spawn_vehicle": return SpawnVehicle(p);
                 case "spawn_ped": return SpawnPed(p);
+                case "enter_vehicle": return EnterVehicle(p);
                 case "nearby_vehicles": return NearbyVehicles(p);
                 case "nearby_peds": return NearbyPeds(p);
                 case "commands": return Commands(p);

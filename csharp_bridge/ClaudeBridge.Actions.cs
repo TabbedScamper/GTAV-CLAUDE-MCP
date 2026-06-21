@@ -214,6 +214,18 @@ namespace ClaudeBridge
             return Ok(new Dictionary<string, object> { ["queued"] = model });
         }
 
+        object EnterVehicle(Dictionary<string, object> p) => OnGameThread(() =>
+        {
+            var ped = Game.Player.Character;
+            if (ped == null || !ped.Exists()) return Err("no player ped");
+            Vehicle v;
+            if (p.ContainsKey("handle")) v = (Vehicle)Entity.FromHandle(ToInt(p["handle"]));
+            else v = World.GetNearbyVehicles(ped.Position, 30f).FirstOrDefault(x => x != null && x.Exists() && x.IsSeatFree(VehicleSeat.Driver));
+            if (v == null || !v.Exists()) return Err("no vehicle nearby to enter");
+            ped.SetIntoVehicle(v, VehicleSeat.Driver);
+            return Ok(new Dictionary<string, object> { ["entered"] = VehNameOf(v) });
+        });
+
         object NearbyVehicles(Dictionary<string, object> p) => OnGameThread(() =>
         {
             var ped = Game.Player.Character;
