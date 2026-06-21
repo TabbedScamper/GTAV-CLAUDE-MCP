@@ -74,6 +74,9 @@ namespace ClaudeBridge
             // Per-frame profiling sample (frame-time + hitch tracking). Cheap, never throws.
             SampleFrame();
 
+            // Process deferred spawn requests (model streaming happens across ticks).
+            try { ProcessSpawns(); } catch { }
+
             // Drain queued native work on the script thread (bounded per tick so we never stall the game).
             int budget = 64;
             while (budget-- > 0 && Jobs.TryDequeue(out var job))
@@ -183,6 +186,34 @@ namespace ClaudeBridge
                 case "methprof_report": return MethProfReport(p);
                 case "methprof_stop": return MethProfStop();
                 case "methprof_clear": return MethProfClear();
+                // ── in-game chat (command Claude from inside the game; no PyLoaderV) ──
+                case "status": return StatusInfo(p);
+                case "queue_user_message": return QueueUserMessage(p);
+                case "get_pending_messages": return GetPendingMessages(p);
+                case "has_pending_messages": return HasPendingMessages(p);
+                case "await_user_message": return AwaitUserMessage(p);
+                case "chat_post": return ChatPost(p);
+                case "hud_message": return HudMessage(p);
+                case "set_overlay": return SetOverlay(p);
+                case "get_chat_history": return GetChatHistory(p);
+                // ── high-level action verbs (spawn / teleport / weather / etc.) ──
+                case "get_world_state": return GetWorldState(p);
+                case "is_in_vehicle": return IsInVehicle(p);
+                case "get_vehicle_info": return GetVehicleInfo(p);
+                case "teleport": return Teleport(p);
+                case "heal": return Heal(p);
+                case "set_invincible": return SetInvincible(p);
+                case "set_wanted": return SetWanted(p);
+                case "give_weapon": return GiveWeapon(p);
+                case "set_weather": return SetWeather(p);
+                case "set_time": return SetTime(p);
+                case "repair_vehicle": return RepairVehicle(p);
+                case "explosion": return Explosion(p);
+                case "spawn_vehicle": return SpawnVehicle(p);
+                case "spawn_ped": return SpawnPed(p);
+                case "nearby_vehicles": return NearbyVehicles(p);
+                case "nearby_peds": return NearbyPeds(p);
+                case "commands": return Commands(p);
                 case "reload_scripts": SendKey(0x2D); return "ok";   // VK_INSERT — SHVDN reload
                 case "send_keys": SendKeyName(Str(p, "keys")); return "ok";
                 default: throw new Exception("unknown command: " + cmd);
