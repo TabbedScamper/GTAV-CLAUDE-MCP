@@ -16,6 +16,8 @@
     <AssemblyName>ClaudeBridge</AssemblyName>
     <RootNamespace>ClaudeBridge</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- SHVDN KeyDown handlers use System.Windows.Forms.KeyEventArgs (the in-game chat panel). -->
+    <UseWindowsForms>true</UseWindowsForms>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,6 +26,11 @@
     <!-- Harmony: safe MANAGED method patching (no x64 inline hooks) — used by the native-call profiler to
          instrument SHVDN's own NativeFunc.InvokeInternal + Script.DoTick. 0Harmony.dll is deployed to scripts\. -->
     <PackageReference Include="Lib.Harmony" Version="2.3.3" />
+    <!-- LemonUI for the in-game F10/F11 chat panel. Compile-time only — the game already ships
+         LemonUI.SHVDN3.dll (with ELSC etc.), so it is NOT deployed/overwritten by this build. -->
+    <PackageReference Include="LemonUI.SHVDN3" Version="2.1.1">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
     <!-- JavaScriptSerializer for JSON (built into .NET Framework — no extra DLL to deploy). -->
     <Reference Include="System.Web.Extensions" />
   </ItemGroup>

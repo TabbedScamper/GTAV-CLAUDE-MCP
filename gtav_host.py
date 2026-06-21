@@ -380,7 +380,12 @@ async def handle_message(client, user_text: str, transcript: Transcript):
         return
     if reply.strip():
         transcript.replace_last("Claude: " + reply.strip())
-        notify(reply.strip())
+        # Push the clean, full reply to the bridge's in-process transcript -> the in-game ClaudeChatPanel
+        # (merged into ClaudeBridge.dll) renders it. Replaces the old shared-memory-only path.
+        try:
+            await asyncio.to_thread(bridge_send, "chat_post", {"message": reply.strip()})
+        except Exception:
+            pass
         log_reply(reply.strip())
     else:
         transcript.replace_last("Claude: (done)")

@@ -198,6 +198,7 @@ namespace ClaudeBridge
                 case "get_chat_history": return GetChatHistory(p);
                 // ── high-level action verbs (spawn / teleport / weather / etc.) ──
                 case "get_world_state": return GetWorldState(p);
+                case "get_context": return new Dictionary<string, object> { ["success"] = true, ["context"] = GetWorldState(p) };
                 case "is_in_vehicle": return IsInVehicle(p);
                 case "get_vehicle_info": return GetVehicleInfo(p);
                 case "teleport": return Teleport(p);
