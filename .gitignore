@@ -72,3 +72,9 @@ tools/_session-reconstruction-*/
 
 # Local Claude tooling (commands/skills) — local only
 .claude/
+
+# ETW profiler runtime artifacts
+tools/gta_modules.json
+tools/*.etl
+tools/*.etl.zip
+tools/PerfView*.exe

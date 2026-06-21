@@ -67,6 +67,16 @@ New-Item -ItemType Directory -Force -Path $pyDir, $scriptsDir | Out-Null
 # Copy runtime files
 Copy-Item (Join-Path $proj 'pyscript\bridge.py')      $pyDir -Force; Write-Host "  + pyscript\bridge.py"
 Copy-Item (Join-Path $proj 'pyscript\native_db.json') $pyDir -Force; Write-Host "  + pyscript\native_db.json"
+
+# Supporting modules bridge.py imports (RE toolkit, profiler, catalogs, etc.) + their data files.
+# bridge.py hot-reloads these on F9, so they must live next to it in the game's pyscript folder.
+foreach ($f in (Get-ChildItem (Join-Path $proj 'pyscript') -Filter '*.py' | Where-Object { $_.Name -ne 'bridge.py' -and $_.Name -notlike 'test_*' })) {
+    Copy-Item $f.FullName $pyDir -Force; Write-Host "  + pyscript\$($f.Name)"
+}
+foreach ($d in 'ysc_script_names.txt') {
+    $src = Join-Path $proj "pyscript\$d"
+    if (Test-Path $src) { Copy-Item $src $pyDir -Force; Write-Host "  + pyscript\$d" }
+}
 $dll = Join-Path $proj 'ui_companion\bin\Release\ClaudeChatUI.dll'
 if (Test-Path $dll) { Copy-Item $dll $scriptsDir -Force; Write-Host "  + scripts\ClaudeChatUI.dll" }
 else { Write-Host "  ! ClaudeChatUI.dll not built (build ui_companion first)" -ForegroundColor Yellow }

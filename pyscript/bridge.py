@@ -3306,6 +3306,7 @@ def _run_offthread(handler, params):
 # stale cached copy of the RE modules. Drop them first so every F9 hot-reloads the toolkit from disk.
 import sys as _sys
 for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch",
+          "re_tools_scripts", "re_tools_profile",
           "gta_catalog", "gta_recipes", "vehicle_tuning", "world_sense", "agent_actions", "mission_sense",
           "commentary"):
     _sys.modules.pop(_m, None)
@@ -3346,6 +3347,24 @@ try:
     log_message("info", "re_tools_patch (code mod) loaded")
 except Exception as e:
     log_message("error", f"re_tools_patch load failed: {e}")
+
+# ---- Layer 1 + profiler: live .ysc script inventory + per-mod CPU sampling (perf diagnosis) ----
+try:
+    import re_tools_scripts as _rs
+    _rs.bind(globals())
+    COMMANDS.update(_rs.SCRIPTS_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _rs.SCRIPTS_OFFTHREAD          # read-only -> paused-safe
+    log_message("info", "re_tools_scripts (Layer 1 .ysc enumerator) loaded")
+except Exception as e:
+    log_message("error", f"re_tools_scripts load failed: {e}")
+try:
+    import re_tools_profile as _rp
+    _rp.bind(globals())
+    COMMANDS.update(_rp.PROFILE_COMMANDS)
+    _OFFTHREAD_COMMANDS |= _rp.PROFILE_OFFTHREAD          # read-only sampler -> off the game thread
+    log_message("info", "re_tools_profile (CPU sampler) loaded")
+except Exception as e:
+    log_message("error", f"re_tools_profile load failed: {e}")
 
 # ---- Build-anything layer: name<->hash catalogs, queryable recipes, native vehicle tuning ----------
 try:
@@ -3505,7 +3524,8 @@ def _reload_re_toolkit():
     so calling this from on_start hot-reloads the toolkit (drop cached modules, re-bind, re-register)."""
     global _OFFTHREAD_COMMANDS
     import sys as _s
-    for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch"):
+    for _m in ("re_tools", "re_tools_pardump", "re_tools_dynamic", "re_tools_scan", "re_tools_patch",
+               "re_tools_scripts", "re_tools_profile"):
         _s.modules.pop(_m, None)
     try:
         import re_tools; re_tools.bind(globals()); COMMANDS.update(re_tools.RE_COMMANDS); _OFFTHREAD_COMMANDS |= re_tools.RE_OFFTHREAD
@@ -3522,6 +3542,12 @@ def _reload_re_toolkit():
     try:
         import re_tools_patch as _pa; _pa.bind(globals()); COMMANDS.update(_pa.PATCH_COMMANDS); _OFFTHREAD_COMMANDS |= _pa.PATCH_OFFTHREAD
     except Exception as e: log_message("error", f"patch reload failed: {e}")
+    try:
+        import re_tools_scripts as _rs; _rs.bind(globals()); COMMANDS.update(_rs.SCRIPTS_COMMANDS); _OFFTHREAD_COMMANDS |= _rs.SCRIPTS_OFFTHREAD
+    except Exception as e: log_message("error", f"scripts reload failed: {e}")
+    try:
+        import re_tools_profile as _rp; _rp.bind(globals()); COMMANDS.update(_rp.PROFILE_COMMANDS); _OFFTHREAD_COMMANDS |= _rp.PROFILE_OFFTHREAD
+    except Exception as e: log_message("error", f"profile reload failed: {e}")
     log_message("info", "RE toolkit (re)loaded")
 
 def on_start():
