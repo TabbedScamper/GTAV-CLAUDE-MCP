@@ -86,3 +86,11 @@ csharp_bridge/obj/
 # Perf-capture kit: source committed; dist/ is assembled artifacts, report is local
 tools/perf_capture/dist/
 tools/perf_capture/ELSC_perf_report.txt
+
+# Host runtime logs + PyInstaller build output (session artifacts, not source)
+host_out.log
+host_err.log
+ClaudeHost.spec
+build/
+tools/__pycache__/
+tools/*.tmp.*

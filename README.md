@@ -6,28 +6,35 @@ call any of ~6,700 game natives, and read/write vehicle memory (e.g. a wheel-fit
 
 **Single-player only.** This is a memory-editing/modding tool; never use it in GTA Online.
 
-> ## 🚧 Work in progress
-> This project is an active **WIP** and not yet fully tested in-game — expect rough edges, breaking
-> changes, and things that don't work yet. It's implemented and validated off-game (compiles,
-> unit/round-trip tests pass), but full in-game end-to-end testing on a live GTA V install is still
-> ongoing. Use at your own risk. Feedback and issues welcome.
-
 > **Credit:** if you use, fork, or build on this, please credit **TabbedScamper** and link back to
 > this repo (<https://github.com/TabbedScamper/GTAV-CLAUDE-MCP>). See [Credits](#credits).
 
+## ⚡ Quick start
+1. Install **ScriptHookV** + **ScriptHookVDotNet 3 (nightly)** in your GTA V folder.
+2. Run **`install.bat`** (auto-finds your game folder, drops the bridge in `scripts\`).
+3. Launch GTA V (story mode). Press **F11** for the Claude panel, **F10** to chat.
+4. For autonomous replies, run the host: **`run_host.bat`** (or build `ClaudeHost.exe` via
+   `build_host_exe.bat` so players need no Python). The host uses your `claude` login — no API key.
+
+👉 **Every command the bridge supports is documented in [TOOLS.md](TOOLS.md).**
+
 ## How it works
 
+The in-game half is now a **single C# SHVDN script** (`ClaudeBridge.dll`) — works on GTA V
+**Legacy and Enhanced**, no PyLoaderV. The "brain" runs PC-side and talks to it over a socket.
+
 ```
-        You (in-game, press F10)
+        You (in-game, press F10)              F11 = chat panel (status: thinking / ready / offline)
                 │  message
                 ▼
-   pyscript/bridge.py  ──────────────►  gtav_host.py  ──────►  Claude (Agent SDK)
-   (runs in GTA V via PyLoaderV)   long-poll        owns the     │ uses game tools via MCP
-   reads/writes game memory        (≈instant)       session      ▼
-                ▲                                          mcp_server/server.py
-                │  reply (streamed to the in-game panel)         │ TCP :27015, JSON
-                └──────────────────────────────────────── bridge.py
+   ClaudeBridge.dll  ───────────────►  ClaudeHost.exe / gtav_host.py  ──────►  Claude (Agent SDK)
+   (C# SHVDN; Legacy + Enhanced)    long-poll await_user_message    owns the   │ game tools via MCP
+   natives · memory r/w · patch ·                                    session   ▼
+   decode · profiler · chat panel                                       mcp_server/server.py
+                ▲   reply (chat_post → panel)                                  │ TCP :27015, JSON
+                └─────────────────────────────────────────────────── ClaudeBridge.dll
 ```
+
 
 - **`gtav_host.py`** drives Claude via the **Claude Agent SDK** (reuses your `claude` login — no API
   key, no terminal, no focus stealing). It long-polls the bridge for your F10 messages, queries
