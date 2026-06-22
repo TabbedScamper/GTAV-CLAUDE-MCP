@@ -82,10 +82,11 @@ namespace ClaudeBridge
             while (sw.ElapsedMilliseconds < timeoutMs)
             {
                 if (_userMessages.TryDequeue(out var m))
-                    return new Dictionary<string, object> { ["message"] = m, ["timed_out"] = false };
+                    return new Dictionary<string, object> { ["success"] = true, ["message"] = m, ["timed_out"] = false };
                 Thread.Sleep(50);
             }
-            return new Dictionary<string, object> { ["message"] = null, ["timed_out"] = true };
+            // host contract: an idle window is signalled via an "error" containing "timeout" (not a drop)
+            return new Dictionary<string, object> { ["error"] = "timeout", ["message"] = null, ["timed_out"] = true };
         }
 
         object ChatPost(Dictionary<string, object> p) { PostAssistant(Str(p, "message") ?? Str(p, "text")); return new Dictionary<string, object> { ["success"] = true }; }

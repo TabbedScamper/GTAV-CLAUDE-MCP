@@ -23,8 +23,8 @@ namespace ClaudeBridge
         int _reloadTimer = 0;
         int _lastTxLen = -1;
 
-        // Configurable keys (default F8 toggle / F9 chat) — F10/F11/F12 collide with GPU/Steam overlays.
-        Keys _toggleKey = Keys.F8, _chatKey = Keys.F9;
+        // Keys: F11 toggles the panel, F10 opens chat (the original bindings). Configurable in scripts\ClaudeBridge.ini.
+        Keys _toggleKey = Keys.F11, _chatKey = Keys.F10;
         // Socket-driven visibility so the panel can be shown without a keypress: -1 no-op, 0 hide, 1 show.
         internal static volatile int CmdVisible = -1;
 
@@ -54,8 +54,8 @@ namespace ClaudeBridge
                 if (!File.Exists(path))
                     File.WriteAllText(path,
                         "[Keys]\n; .NET key names (F1..F12, Insert, Home, OemTilde, NumPad0, ...).\n" +
-                        "; Avoid keys your GPU/Steam/Windows overlay uses (F10/F11/F12 often collide).\n" +
-                        "TogglePanel=F8\nChat=F9\n");
+                        "; (If a GPU/Steam/Windows overlay grabs F10/F11, change these to e.g. F8/F9.)\n" +
+                        "TogglePanel=F11\nChat=F10\n");
                 foreach (var raw in File.ReadAllLines(path))
                 {
                     var line = raw.Trim();

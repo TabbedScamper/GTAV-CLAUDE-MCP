@@ -348,40 +348,48 @@ def _format_context(ctx: dict, msg: str = "") -> str:
 
     return ", ".join(parts)
 
-async def handle_message(client, user_text: str, transcript: Transcript):
+async def ask_claude(prompt: str) -> str:
+    """Run ONE prompt through a FRESH Claude client (create -> query -> collect -> close).
+    A fresh per-message client is the pattern proven to work here; reusing a single persistent
+    client across the long-poll loop hangs receive_response() (never yields the reply)."""
+    reply = ""
+    async with ClaudeSDKClient(options=_build_options()) as client:
+        await client.query(prompt)
+        async for message in client.receive_response():
+            print(f"[host]    msg: {type(message).__name__}", flush=True)
+            if AssistantMessage and isinstance(message, AssistantMessage):
+                t = _extract_text(message)
+                if t:
+                    reply += t
+            elif ResultMessage and isinstance(message, ResultMessage):
+                break
+    return reply
+
+
+async def handle_message(user_text: str, transcript: Transcript):
     transcript.add(f"> {user_text}")
     transcript.add("Claude: ...")
     # Auto-feed live game state so Claude is situationally aware (best-effort, non-fatal).
-    # Full pull (cheap - one round-trip), then trim to what's relevant to THIS message.
     prompt = user_text
     try:
-        r = await asyncio.to_thread(bridge_send, "get_context", {"detail": "full"})
+        # Bounded so a slow/paused bridge can't stall the whole handler (this was the hang).
+        r = await asyncio.wait_for(
+            asyncio.to_thread(bridge_send, "get_context", {"detail": "full"}), timeout=4.0)
         ctx_line = _format_context(r.get("context") or {}, user_text) if r.get("success") else ""
         if ctx_line:
             prompt = f"[Live game state: {ctx_line}]\n\n{user_text}"
-    except Exception:
-        pass
-    reply = ""
+    except Exception as e:
+        print(f"[host] get_context skipped: {e!r}", flush=True)
+    print(f"[host] >> handling: {user_text[:80]!r}", flush=True)
     try:
-        await client.query(prompt)
-        async for message in client.receive_response():
-            if SystemMessage and isinstance(message, SystemMessage):
-                continue
-            if AssistantMessage and isinstance(message, AssistantMessage):
-                txt = _extract_text(message)
-                if txt:
-                    reply += txt
-                    transcript.replace_last("Claude: " + reply)
-            elif ResultMessage and isinstance(message, ResultMessage):
-                break
+        reply = await ask_claude(prompt)
     except Exception as e:
         transcript.replace_last(f"Claude: [error: {e}]")
-        print(f"[host] query error: {e}")
+        print(f"[host] query error: {e}", flush=True)
         return
+    print(f"[host]    reply_len={len(reply)}", flush=True)
     if reply.strip():
         transcript.replace_last("Claude: " + reply.strip())
-        # Push the clean, full reply to the bridge's in-process transcript -> the in-game ClaudeChatPanel
-        # (merged into ClaudeBridge.dll) renders it. Replaces the old shared-memory-only path.
         try:
             await asyncio.to_thread(bridge_send, "chat_post", {"message": reply.strip()})
         except Exception:
@@ -437,10 +445,9 @@ async def main():
     if st.get("error"):
         transcript.add(f"(bridge: {st['error']} - start GTA V + load bridge.py with F9)")
 
-    options = _build_options()
-    while True:  # outer loop: recover the session if the SDK subprocess dies
+    while True:  # outer loop: recover from transient errors
         try:
-            async with ClaudeSDKClient(options=options) as client:
+            if True:  # client is created fresh PER MESSAGE in handle_message (proven-stable pattern)
                 transcript.add("Connected to Claude. Ready.")
                 bridge_up = True
                 while True:
@@ -457,7 +464,7 @@ async def main():
                         if not bridge_up:
                             bridge_up = True
                             transcript.add("(GTA bridge back online.)")
-                        await handle_message(client, r["message"], transcript)
+                        await handle_message(r["message"], transcript)
                     elif "timeout" in err or "deferred" in err:
                         # No message in the window - bridge is alive, just idle. Loop instantly.
                         if not bridge_up:
