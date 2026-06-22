@@ -176,7 +176,13 @@ def bridge_send(command: str, params: dict | None = None, timeout: float = 5.0) 
                 if not chunk:
                     break
                 body += chunk
-            return json.loads(body.decode("utf-8"))
+            resp = json.loads(body.decode("utf-8"))
+            # The C# ClaudeBridge wraps every reply as {"result": ...} (or {"error": ...}); the old
+            # bridge.py returned the dict flat. Unwrap so the host's r.get("success")/etc. work.
+            if isinstance(resp, dict) and "result" in resp:
+                inner = resp["result"]
+                return inner if isinstance(inner, dict) else {"success": True, "result": inner}
+            return resp
     except (ConnectionRefusedError, socket.timeout):
         return {"error": "bridge not running"}
     except Exception as e:
@@ -240,7 +246,7 @@ def read_last_op_from_disk() -> str | None:
 # ----------------------------------------------------------------------------
 try:
     from claude_agent_sdk import (
-        ClaudeSDKClient, ClaudeAgentOptions,
+        query, ClaudeSDKClient, ClaudeAgentOptions,
         AssistantMessage, ResultMessage, SystemMessage,
     )
     SDK_OK = True
@@ -349,26 +355,27 @@ def _format_context(ctx: dict, msg: str = "") -> str:
     return ", ".join(parts)
 
 async def ask_claude(prompt: str) -> str:
-    """Run ONE prompt through a FRESH Claude client (create -> query -> collect -> close).
-    A fresh per-message client is the pattern proven to work here; reusing a single persistent
-    client across the long-poll loop hangs receive_response() (never yields the reply)."""
+    """One-shot NON-INTERACTIVE query(). The interactive ClaudeSDKClient hangs on native Windows
+    (anyio subprocess-stdio bug, SDK issue #208, closed 'not planned'); query() is the reliable
+    path. Do NOT break the loop early - an early break can hang anyio's task-group cleanup; let the
+    stream finish on its own."""
     reply = ""
-    async with ClaudeSDKClient(options=_build_options()) as client:
-        await client.query(prompt)
-        async for message in client.receive_response():
-            print(f"[host]    msg: {type(message).__name__}", flush=True)
-            if AssistantMessage and isinstance(message, AssistantMessage):
-                t = _extract_text(message)
-                if t:
-                    reply += t
-            elif ResultMessage and isinstance(message, ResultMessage):
-                break
+    async for message in query(prompt=prompt, options=_build_options()):
+        if AssistantMessage and isinstance(message, AssistantMessage):
+            t = _extract_text(message)
+            if t:
+                reply += t
     return reply
 
 
 async def handle_message(user_text: str, transcript: Transcript):
+    print(f"[host] >> {user_text[:80]!r}", flush=True)
     transcript.add(f"> {user_text}")
     transcript.add("Claude: ...")
+    try:
+        await asyncio.to_thread(bridge_send, "set_status", {"state": "thinking"})  # panel shows "thinking..."
+    except Exception:
+        pass
     # Auto-feed live game state so Claude is situationally aware (best-effort, non-fatal).
     prompt = user_text
     try:
@@ -380,12 +387,13 @@ async def handle_message(user_text: str, transcript: Transcript):
             prompt = f"[Live game state: {ctx_line}]\n\n{user_text}"
     except Exception as e:
         print(f"[host] get_context skipped: {e!r}", flush=True)
-    print(f"[host] >> handling: {user_text[:80]!r}", flush=True)
     try:
         reply = await ask_claude(prompt)
     except Exception as e:
         transcript.replace_last(f"Claude: [error: {e}]")
         print(f"[host] query error: {e}", flush=True)
+        try: await asyncio.to_thread(bridge_send, "set_status", {"state": "error"})
+        except Exception: pass
         return
     print(f"[host]    reply_len={len(reply)}", flush=True)
     if reply.strip():
@@ -397,6 +405,10 @@ async def handle_message(user_text: str, transcript: Transcript):
         log_reply(reply.strip())
     else:
         transcript.replace_last("Claude: (done)")
+    try:
+        await asyncio.to_thread(bridge_send, "set_status", {"state": "ready"})  # panel back to "ready"
+    except Exception:
+        pass
 
 def _self_register():
     """Write this host's launcher path where the in-game C# UI can find it, so after the

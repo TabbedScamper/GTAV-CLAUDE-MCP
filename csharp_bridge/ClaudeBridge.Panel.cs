@@ -33,8 +33,9 @@ namespace ClaudeBridge
         const int WRAP_CHARS = 58;
 
         ScaledRectangle _bg, _header, _footer, _track, _thumb;
-        ScaledText _title, _footerText, _empty;
+        ScaledText _title, _footerText, _empty, _status;
         ScaledText[] _lines;
+        int _frame;   // for the animated "thinking..." dots
         readonly List<string> _display = new List<string>();   // wrapped, color-tagged display lines
 
         public ClaudeChatPanel()
@@ -77,6 +78,7 @@ namespace ClaudeBridge
             _track  = new ScaledRectangle(PointF.Empty, SizeF.Empty) { Color = Color.FromArgb(120, 70, 70, 95) };
             _thumb  = new ScaledRectangle(PointF.Empty, SizeF.Empty) { Color = Color.FromArgb(235, 150, 130, 210) };
             _title  = new ScaledText(PointF.Empty, "Claude", 0.4f, Font.ChaletLondon) { Color = Color.White, Outline = true };
+            _status = new ScaledText(PointF.Empty, "", 0.32f, Font.ChaletLondon) { Color = Color.White, Alignment = Alignment.Right, Outline = true };
             _footerText = new ScaledText(PointF.Empty, $"{_chatKey}: chat   {_toggleKey}: close   PgUp/PgDn: scroll", 0.3f, Font.ChaletLondon)
             { Color = Color.FromArgb(255, 165, 165, 195) };
             _empty = new ScaledText(PointF.Empty, "Press F10 to talk to Claude.", 0.34f, Font.ChaletLondon)
@@ -119,6 +121,21 @@ namespace ClaudeBridge
             _bg.Position = new PointF(x, y); _bg.Size = new SizeF(PANEL_W, panelH); _bg.Draw();
             _header.Position = new PointF(x, y); _header.Size = new SizeF(PANEL_W, HEADER_H); _header.Draw();
             _title.Position = new PointF(x + PAD, y + 7f); _title.Draw();
+
+            // Live status indicator (right side of the header): thinking / ready / error / host offline.
+            _frame++;
+            string st = ClaudeBridge.HostStateLabel();
+            string label; Color col;
+            switch (st)
+            {
+                case "thinking": label = "thinking" + new string('.', (_frame / 15) % 4); col = Color.FromArgb(255, 255, 215, 90); break;
+                case "ready":
+                case "idle":     label = "* ready";        col = Color.FromArgb(255, 150, 230, 160); break;
+                case "error":    label = "! error";        col = Color.FromArgb(255, 255, 120, 120); break;
+                default:         label = "host offline";   col = Color.FromArgb(255, 175, 175, 185); break;
+            }
+            _status.Text = label; _status.Color = col;
+            _status.Position = new PointF(x + PANEL_W - PAD, y + 9f); _status.Draw();
 
             int total = _display.Count;
             float cx = x + PAD, cy = y + HEADER_H + PAD;

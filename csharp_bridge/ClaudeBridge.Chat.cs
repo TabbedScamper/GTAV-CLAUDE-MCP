@@ -29,6 +29,24 @@ namespace ClaudeBridge
         static volatile string _overlayText = "";
         static volatile string _overlayState = "";   // "searching" | "ok" | "error" | ...
 
+        // ---- host presence + status for the panel's live indicator ----
+        internal static volatile string HostStatus = "idle";   // "thinking" | "ready" | "idle" | "error"
+        static double _hostSeenMs = -1e9;                       // last time the host contacted the bridge
+        static void HostSeen() { try { _hostSeenMs = _profClock.Elapsed.TotalMilliseconds; } catch { } }
+        /// <summary>What the panel shows: "offline" if the host hasn't checked in for 30s, else its reported state.</summary>
+        internal static string HostStateLabel()
+        {
+            double now; try { now = _profClock.Elapsed.TotalMilliseconds; } catch { return HostStatus; }
+            if (_hostSeenMs < 0 || now - _hostSeenMs > 30000) return "offline";
+            return HostStatus ?? "idle";
+        }
+        object SetStatus(Dictionary<string, object> p)
+        {
+            HostStatus = Str(p, "state", "idle") ?? "idle";
+            HostSeen();
+            return new Dictionary<string, object> { ["success"] = true, ["state"] = HostStatus };
+        }
+
         static string Now() { return DateTime.Now.ToString("HH:mm:ss"); }
 
         // ---- in-process API (used by the merged F10 panel) ----
@@ -78,6 +96,7 @@ namespace ClaudeBridge
         {
             int timeoutMs = p != null && p.TryGetValue("timeout_ms", out var t) ? ToInt(t)
                           : (p != null && p.TryGetValue("timeout_seconds", out var ts) ? ToInt(ts) * 1000 : 30000);
+            HostSeen();   // the host's long-poll doubles as a liveness heartbeat
             var sw = Stopwatch.StartNew();
             while (sw.ElapsedMilliseconds < timeoutMs)
             {
